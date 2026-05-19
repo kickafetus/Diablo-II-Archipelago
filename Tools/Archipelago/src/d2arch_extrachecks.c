@@ -666,6 +666,9 @@ static void Extra_FireApLocation(int apId, const char* tag) {
             tag ? tag : "?", apId);
         Extra_DeliverStandalone(apId, tag);
     }
+    /* 1.9.10 — persist within 250ms via PeriodicSave throttle */
+    extern void MarkStateDirty(void);
+    MarkStateDirty();
 }
 
 /* ------------------------------------------------------------------

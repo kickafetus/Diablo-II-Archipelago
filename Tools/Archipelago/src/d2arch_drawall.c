@@ -1180,7 +1180,15 @@ static void DrawAll(void) {
                                      * by the "No skill points" fall-through. Order matters:
                                      * level check first so under-level players get the right
                                      * reason regardless of how many points they have. */
-                                    BOOL levelBlocked = (reqLevel > 0 && charLevel > 0 && charLevel < reqLevel);
+                                    /* 1.9.10 — SkillLevelReqs toggle (Maegis #2).
+                                     * When OFF (g_skillLevelReqs=FALSE), bypass the
+                                     * editor-side under-level check. Default is ON
+                                     * (mirrors pre-1.9.10 behaviour). Set via
+                                     * d2arch.ini [Settings] SkillLevelReqs=0 or via
+                                     * AP slot_data skill_level_reqs=0. */
+                                    extern BOOL g_skillLevelReqs;
+                                    BOOL levelBlocked = g_skillLevelReqs &&
+                                        (reqLevel > 0 && charLevel > 0 && charLevel < reqLevel);
                                     if (levelBlocked) {
                                         char buf[96];
                                         _snprintf(buf, sizeof(buf),
@@ -1220,14 +1228,31 @@ static void DrawAll(void) {
                                             }
                                         }
                                         s_dynLevel[btnIdx]++;
-                                        /* Save level */
-                                        char sp[MAX_PATH], sfx[32];
+                                        /* Save level — 1.9.10 atomic write via tmp+rename.
+                                         * These per-button cache files are display-only
+                                         * but the user clicks them often; non-atomic
+                                         * fopen("w") could leave them empty/corrupt on
+                                         * crash mid-write. Tiny files but same race. */
+                                        char sp[MAX_PATH], spTmp[MAX_PATH], sfx[32];
                                         GetCharFileDir(sp, MAX_PATH);
                                         if (btnIdx == 0) strcat(sp, "d2arch_fireball_");
                                         else { sprintf(sfx, "d2arch_skill%d_", btnIdx + 1); strcat(sp, sfx); }
                                         strcat(sp, g_charName); strcat(sp, ".dat");
-                                        FILE* sf = fopen(sp, "w");
-                                        if (sf) { fprintf(sf, "%d", s_dynLevel[btnIdx]); fclose(sf); }
+                                        snprintf(spTmp, sizeof(spTmp), "%s.tmp", sp);
+                                        FILE* sf = fopen(spTmp, "w");
+                                        if (sf) {
+                                            fprintf(sf, "%d", s_dynLevel[btnIdx]);
+                                            fclose(sf);
+                                            MoveFileExA(spTmp, sp, MOVEFILE_REPLACE_EXISTING);
+                                        }
+                                        /* 1.9.10 — mark state dirty so PeriodicSave
+                                         * flushes SaveStateFile + SaveSlots within
+                                         * 250ms. Was previously only saved by 10-second
+                                         * periodic timer; a crash in the gap lost the
+                                         * click's side effects (pending counters,
+                                         * resetPoints accounting). */
+                                        extern void MarkStateDirty(void);
+                                        MarkStateDirty();
                                     } else {
                                         ShowNotify("No skill points available!");
                                     }

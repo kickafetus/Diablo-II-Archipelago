@@ -838,6 +838,12 @@ static void RenderConfirmDialog(int mx, int my, BOOL clicked) {
             RemoveSkill(g_confirmTab, g_confirmSlot);
             ShowNotify("Removed skill (-1 Reset Point)");
             g_confirmOpen = FALSE;
+            /* 1.9.10 — persist Reset Point decrement immediately; without
+             * this the decrement only lands at next PeriodicSave (250 ms
+             * via MarkStateDirty, or 10 s without). A crash within the
+             * window would refund the Reset Point on reload. */
+            extern void MarkStateDirty(void);
+            MarkStateDirty();
         }
         if (InRect(mx, my, noX, btnY, bw, bh)) {
             g_confirmOpen = FALSE;

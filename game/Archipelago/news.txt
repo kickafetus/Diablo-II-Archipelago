@@ -8,6 +8,49 @@ The launcher requires you to point to your existing Diablo II + Lord of
 Destruction installation. Original game files are copied from your own
 install automatically. Only Diablo II Classic is supported (NOT Resurrected).
 
+=== Beta 1.9.10 - Cross-Char + Crash Safety + Validation Pass ===
+
+This release closes 7 of 8 bugs Maegis reported on Discord plus an
+install issue Marco found, after an exhaustive 1104-config validation
+pass to make sure no setting combination produces an unbeatable seed.
+
+Skills no longer get lost when switching characters in the same game
+session. Previously if you played char A, exited to char select, and
+loaded char B (especially a different class), char A's memory-hacked
+skill table and AP-mode flags leaked into char B — the cheat menu
+wouldn't respond, skills couldn't be picked. Now every character
+load starts from a clean vanilla state, equivalent to having
+restarted the game completely. Save+Quit warning in news.txt above
+will be relaxed in 1.9.11 once we've seen this fix shake out in the
+wild.
+
+Skills also no longer get lost on Alt-F4 / game crash. The state files
+are now atomic-write (tmp + atomic rename), so a crash mid-save leaves
+either the old complete file or the new complete file — never a
+half-written one. Save cadence dropped from every 10 seconds to every
+0.25 seconds when something changes, so even a hard crash loses at
+most ~250ms of activity.
+
+If you tried installing Beta 1.9.7-1.9.9 fresh and Windows demanded
+".NET Desktop Runtime 8.0", and your workaround was installing 1.9.6
+first — that's now fixed. The launcher is back to self-contained
+single-file (162 MB exe with embedded .NET 8), so it works on any
+Windows 10/11 machine regardless of what's installed.
+
+Cain rescue quest now works with entrance shuffle on (Tristram is
+no longer in the shuffle pool, and skipping the rescue no longer
+fires the AP check on Lut Gholein entry).
+
+Goal=Collection + Zone Locking no longer hard-softlocks. New
+Skill Level Requirement toggle lets you spend points on high-tier
+skills before reaching their vanilla reqlevel. Zone Locking +
+Entrance Shuffle now auto-disable Entrance Shuffle (they were
+fundamentally incompatible).
+
+Plus three apworld bugs found during validation that would have
+caused FillError on high check-load configurations — all 1104 tested
+configurations now generate cleanly.
+
 === Beta 1.9.9 - Custom Goal Fixes ===
 
 Three coordinated bugs in the Custom Goal feature are now fixed.

@@ -859,4 +859,10 @@ static void Bonus_FireApLocation(int apId, const char* tag) {
             tag ? tag : "?", apId);
         Bonus_DeliverStandalone(apId, tag);
     }
+    /* 1.9.10 — persist fired bit + (standalone) any pending reward
+     * counters within 250ms via PeriodicSave throttle. Without this a
+     * shrine click could be lost if the game crashes inside the
+     * default 10-second save window. */
+    extern void MarkStateDirty(void);
+    MarkStateDirty();
 }

@@ -861,6 +861,11 @@ static void LoadAPSettings(void) {
         g_bossShuffleEnabled = GetPrivateProfileIntA("settings", "BossShuffle", 0, iniPath) != 0;
         g_shopShuffleEnabled = GetPrivateProfileIntA("settings", "ShopShuffle", 0, iniPath) != 0;
         g_entranceShuffleEnabled = GetPrivateProfileIntA("settings", "EntranceShuffle", 0, iniPath) != 0;
+        /* 1.9.10 — SkillLevelReqs toggle (Maegis #2). Default ON. */
+        {
+            extern BOOL g_skillLevelReqs;
+            g_skillLevelReqs = GetPrivateProfileIntA("settings", "SkillLevelReqs", 1, iniPath) != 0;
+        }
         /* 1.8.0 cleanup: TreasureCows INI parse removed — pending reimplementation */
         g_xpMultiplier = GetPrivateProfileIntA("settings", "XPMultiplier", 1, iniPath);
         if (g_xpMultiplier < 1) g_xpMultiplier = 1;
@@ -967,6 +972,11 @@ static void LoadAPSettings(void) {
         if (sscanf(line, "monster_shuffle=%d", &ival) == 1) g_monsterShuffleEnabled = (ival != 0);
         if (sscanf(line, "boss_shuffle=%d", &ival) == 1) g_bossShuffleEnabled = (ival != 0);
         if (sscanf(line, "entrance_shuffle=%d", &ival) == 1) g_entranceShuffleEnabled = (ival != 0); /* 1.9.0 */
+        /* 1.9.10 — SkillLevelReqs toggle (Maegis #2). Default ON if absent. */
+        {
+            extern BOOL g_skillLevelReqs;
+            if (sscanf(line, "skill_level_reqs=%d", &ival) == 1) g_skillLevelReqs = (ival != 0);
+        }
         /* 1.9.0 — Bonus check toggles. Stashed locally; applied via
          * Bonus_ApplyToggles below the loop. */
         {
@@ -1134,6 +1144,20 @@ static void LoadAPSettings(void) {
         if (sscanf(line, "act5_preload_hell=%d",      &ival) == 1 && ival >= 0 && ival < 4) g_actPreload[4][2] = ival;
     }
     fclose(f);
+    /* 1.9.10 — defensive auto-disable: even if a stale ap_settings.dat
+     * (or a manually edited d2arch.ini) ships entrance_shuffle=1 with
+     * zone_locking=1, force it off in memory. The two systems are
+     * fundamentally incompatible (apworld access rules use vanilla
+     * zone IDs, DLL warps via shuffled map the apworld doesn't see)
+     * — see 1.9.10 research notes for the 5 documented failure
+     * scenarios. The apworld also auto-disables at slot_data emit
+     * time but this catches: (a) older slot data, (b) standalone INI
+     * users who toggled both manually, (c) any future bridge bug
+     * that re-introduces the conflict. */
+    if (g_zoneLockingOn && g_entranceShuffleEnabled) {
+        g_entranceShuffleEnabled = FALSE;
+        Log("AP: AUTO-DISABLED entrance_shuffle (incompatible with zone_locking)\n");
+    }
     Log("AP: Settings loaded (goal=%d [act=%d diff=%d], skillHunt=%d zoneLock=%d, "
         "death_link=%d, monShuf=%d bossShuf=%d shopShuf=%d)\n",
         g_apGoal, GOAL_ACT_SCOPE, GOAL_DIFF_SCOPE,

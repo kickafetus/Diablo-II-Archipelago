@@ -429,13 +429,22 @@ static void ProcessPendingGameTick(void) {
                 {
                     int btnIdx = g_reinvestBtnIdx[ri];
                     if (btnIdx < 0 || btnIdx >= 30) btnIdx = ri; /* defensive */
-                    char rsp[MAX_PATH], rsfx[32];
+                    /* 1.9.10 — atomic write via tmp+rename. Reinvest writes
+                     * 30 button-cache files in quick succession; without
+                     * atomicity, a crash mid-batch would leave some files
+                     * partially written. */
+                    char rsp[MAX_PATH], rspTmp[MAX_PATH], rsfx[32];
                     GetCharFileDir(rsp, MAX_PATH);
                     if (btnIdx == 0) strcat(rsp, "d2arch_fireball_");
                     else { sprintf(rsfx, "d2arch_skill%d_", btnIdx + 1); strcat(rsp, rsfx); }
                     strcat(rsp, g_charName); strcat(rsp, ".dat");
-                    FILE* rsf = fopen(rsp, "w");
-                    if (rsf) { fprintf(rsf, "%d", skPts); fclose(rsf); }
+                    snprintf(rspTmp, sizeof(rspTmp), "%s.tmp", rsp);
+                    FILE* rsf = fopen(rspTmp, "w");
+                    if (rsf) {
+                        fprintf(rsf, "%d", skPts);
+                        fclose(rsf);
+                        MoveFileExA(rspTmp, rsp, MOVEFILE_REPLACE_EXISTING);
+                    }
                 }
             }
             g_reinvestPending = FALSE;
@@ -456,23 +465,37 @@ static void ProcessPendingGameTick(void) {
         (g_serverPendingGold > 0 || g_serverPendingStatPts > 0 || g_serverPendingSkillPts > 0)) {
         void* pSrvReward = GetServerPlayer(g_cachedPGame);
         if (pSrvReward) {
+            BOOL anyConsumed = FALSE;
             __try {
                 if (g_serverPendingGold > 0) {
                     int g = g_serverPendingGold; g_serverPendingGold = 0;
                     fnAddStat(pSrvReward, 14, g, 0); /* STAT_GOLD */
                     Log("SERVER REWARD: +%d gold\n", g);
+                    anyConsumed = TRUE;
                 }
                 if (g_serverPendingStatPts > 0) {
                     int s = g_serverPendingStatPts; g_serverPendingStatPts = 0;
                     fnAddStat(pSrvReward, 4, s, 0); /* STAT_STATPTS */
                     Log("SERVER REWARD: +%d stat points\n", s);
+                    anyConsumed = TRUE;
                 }
                 if (g_serverPendingSkillPts > 0) {
                     int k = g_serverPendingSkillPts; g_serverPendingSkillPts = 0;
                     fnAddStat(pSrvReward, 5, k, 0); /* STAT_NEWSKILLS */
                     Log("SERVER REWARD: +%d skill points\n", k);
+                    anyConsumed = TRUE;
                 }
             } __except(1) { Log("SERVER REWARD: exception\n"); }
+            /* 1.9.10 — mark state dirty so the zero'd pending counters
+             * persist within 250 ms. Prevents the "AP delivers, tick
+             * consumes, crash, double-grants on reload" pattern: pre-1.9.10
+             * the consume wiped g_serverPendingX globals but PollAPUnlocks's
+             * SaveStateFile call had already persisted them at non-zero —
+             * so the next load read pending>0 and re-applied the rewards. */
+            if (anyConsumed) {
+                extern void MarkStateDirty(void);
+                MarkStateDirty();
+            }
         }
     }
 
@@ -696,7 +719,24 @@ static void ProcessPendingGameTick(void) {
         }
     }
 
-    /* ZONE TELEPORT: warp player to town if in locked zone */
+    /* ZONE TELEPORT: warp player to town if in locked zone.
+     *
+     * 1.9.10 — DEFERRED to 1.9.11+: Maegis bug #6 reports player lands on
+     * the WP tile after exiting a shuffled cave past Act 1. Root cause:
+     * `LEVEL_WarpUnit` with `nTileCalc=0` (last arg) is IGNORED by D2 1.10f
+     * on outdoor (DrlgType=3) levels — the unit lands at the level's
+     * hardcoded default spawn = the waypoint tile or zone-centroid.
+     * Acts 2-5 have WP-bearing outdoor surface parents (5/7 in Act 2, 4/5
+     * in Act 3, 5/6 in Act 5) so the bug is widespread in those acts.
+     *
+     * Proper fix requires manual room-walk of the destination level after
+     * warp completes, finding a warp-unit-tile (UnitType=2, dwClassId=source
+     * level) and using ord 10027 to re-position the player to those coords.
+     * Research recipe lives in `Research/teleport_warp_findings_2026-04-27.md`.
+     * 4-6 hour Ghidra-heavy implementation; deferred per the 1.9.10 batch
+     * scope to keep this release focused on data-loss + cross-char isolation
+     * fixes. Quality-of-life impact only — no softlock, no data loss.
+     */
     if (g_pendingZoneTeleport > 0) {
         int townArea = g_pendingZoneTeleport;
         if (!g_cachedPGame || !hD2Game) {
@@ -2685,10 +2725,36 @@ static void CheckQuestFlags(void) {
 
             BOOL completed = FALSE;
             __try {
-                completed = fnGetQuestState(pQuestFlags, d2QuestId, 0) ||  /* REWARDGRANTED */
-                            fnGetQuestState(pQuestFlags, d2QuestId, 13) || /* PRIMARYGOALDONE */
-                            fnGetQuestState(pQuestFlags, d2QuestId, 14) || /* COMPLETEDNOW */
-                            fnGetQuestState(pQuestFlags, d2QuestId, 15);   /* COMPLETEDBEFORE */
+                /* 1.9.10 — Cain quest (A1Q4 = quest_id 4) special case:
+                 * vanilla D2 auto-progresses Cain's quest to state 13
+                 * (PRIMARYGOALDONE) the moment the player enters Lut
+                 * Gholein (or talks to Warriv to travel), even if they
+                 * never went to Tristram. Pre-1.9.10 we treated state
+                 * 13 as "completed" universally → Cain's AP reward
+                 * fired on Act-2 entry without actual rescue, a known
+                 * Maegis bug. Fix: for Cain only, require an explicit
+                 * COMPLETEDNOW (14) or COMPLETEDBEFORE (15) which D2
+                 * only sets on real Tristram rescue (A1Q4.cpp:489),
+                 * never by the act-change auto-progress path. Combined
+                 * with #5a (Tristram removed from shuffle pool) this
+                 * means the player MUST physically visit Tristram and
+                 * click the gibbet to get the AP check.
+                 *
+                 * Other quests keep the old 4-state accept because
+                 * vanilla doesn't auto-progress them on act change. */
+                if (d2QuestId == 4) {
+                    completed = fnGetQuestState(pQuestFlags, d2QuestId, 0)  || /* REWARDGRANTED */
+                                fnGetQuestState(pQuestFlags, d2QuestId, 14) || /* COMPLETEDNOW */
+                                fnGetQuestState(pQuestFlags, d2QuestId, 15);   /* COMPLETEDBEFORE */
+                    /* NOTE: state 13 (PRIMARYGOALDONE) intentionally
+                     * NOT accepted for Cain — that's the vanilla
+                     * auto-progress trigger we want to filter out. */
+                } else {
+                    completed = fnGetQuestState(pQuestFlags, d2QuestId, 0)  || /* REWARDGRANTED */
+                                fnGetQuestState(pQuestFlags, d2QuestId, 13) || /* PRIMARYGOALDONE */
+                                fnGetQuestState(pQuestFlags, d2QuestId, 14) || /* COMPLETEDNOW */
+                                fnGetQuestState(pQuestFlags, d2QuestId, 15);   /* COMPLETEDBEFORE */
+                }
             } __except(EXCEPTION_EXECUTE_HANDLER) { continue; }
 
             if (completed) {

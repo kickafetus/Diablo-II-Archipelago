@@ -1010,6 +1010,9 @@ static void RenderEditor(void) {
                                             AssignSkill(g_edDragPoolIdx, tab, slot);
                                             g_resetPoints--;
                                             Log("EDITOR SWAP: replaced tab %d slot %d (cost 1 reset)\n", tab, slot);
+                                            /* 1.9.10 — persist Reset Point decrement immediately */
+                                            extern void MarkStateDirty(void);
+                                            MarkStateDirty();
                                         } else {
                                             ShowNotify("Need 1 Reset Point to swap!");
                                         }

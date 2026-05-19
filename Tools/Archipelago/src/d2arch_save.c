@@ -126,15 +126,25 @@ static void PruneOldBackups(const char* d2sPath, int keepN) {
     }
 }
 
-/* Save skill slots to file */
+/* Save skill slots to file.
+ * 1.9.10 — atomic write via tmp+rename (same pattern as WriteChecksFile).
+ * Pre-1.9.10 used fopen(path, "w") which truncates the file in-place; any
+ * crash or process kill (Alt-F4, watchdog, OS reboot) between truncate and
+ * the next fclose left a partial file. LoadSlots on next start would skip
+ * the missing tabs/slots and the .d2s skill bytes would refund those points
+ * to NEWSKILLS pool — Maegis's "skill lost mid-run" symptom.
+ *
+ * Atomic rename guarantees: caller either sees the OLD complete file or
+ * the NEW complete file, never a half-written one. */
 static void SaveSlots(void) {
     if (!g_charName[0] || !g_poolInitialized) return;
 
-    char dir[MAX_PATH], path[MAX_PATH];
+    char dir[MAX_PATH], path[MAX_PATH], tmpPath[MAX_PATH];
     GetCharFileDir(dir, MAX_PATH);
     sprintf(path, "%sd2arch_slots_%s.dat", dir, g_charName);
+    sprintf(tmpPath, "%sd2arch_slots_%s.dat.tmp", dir, g_charName);
 
-    FILE* f = fopen(path, "w");
+    FILE* f = fopen(tmpPath, "w");
     if (!f) return;
 
     int cls = GetPlayerClass();
@@ -150,6 +160,13 @@ static void SaveSlots(void) {
         }
     }
     fclose(f);
+
+    if (!MoveFileExA(tmpPath, path, MOVEFILE_REPLACE_EXISTING)) {
+        DWORD err = GetLastError();
+        Log("SaveSlots: rename failed (err=%lu) — leaving tmp at %s\n",
+            err, tmpPath);
+        return;
+    }
     Log("SaveSlots: saved to %s\n", path);
 
     /* Skill level files are saved by the panel button click handler (d2arch_drawall.c)
@@ -213,15 +230,29 @@ static void LoadSlots(void) {
     Log("LoadSlots: loaded %d assignments for '%s'\n", count, g_charName);
 }
 
-/* Save state file (seed, skills, unlock status) */
+/* Save state file (seed, skills, unlock status).
+ * 1.9.10 — atomic write via tmp+rename. Pre-1.9.10 used fopen(path, "w")
+ * which truncated the 10-KB+ state file in place. Any crash mid-write
+ * (D2 itself crashing, Alt-F4, OS reboot, watchdog kill) left the file
+ * truncated. LoadStateFile on next start re-runs InitSkillPool which
+ * resets ALL skills to unlocked=FALSE first, then only re-marks the
+ * lines that survived to disk — losing every skill not in the partial
+ * file. This is the root cause of Maegis's "skill lost mid-run" /
+ * "game crash drops skills" bug and the Alphena 1.9.5.1 hot-fix
+ * '1:0' corrupted-line symptom.
+ *
+ * Atomic rename (MoveFileExA with MOVEFILE_REPLACE_EXISTING) is the
+ * Windows atomic-replace; the next LoadStateFile sees either the OLD
+ * complete file or the NEW complete file, never a half-written one. */
 static void SaveStateFile(void) {
     if (!g_charName[0] || !g_poolInitialized) return;
 
-    char dir[MAX_PATH], path[MAX_PATH];
+    char dir[MAX_PATH], path[MAX_PATH], tmpPath[MAX_PATH];
     GetCharFileDir(dir, MAX_PATH);
     sprintf(path, "%sd2arch_state_%s.dat", dir, g_charName);
+    sprintf(tmpPath, "%sd2arch_state_%s.dat.tmp", dir, g_charName);
 
-    FILE* f = fopen(path, "w");
+    FILE* f = fopen(tmpPath, "w");
     if (!f) return;
 
     fprintf(f, "seed=%u\n", g_seed);
@@ -276,6 +307,11 @@ static void SaveStateFile(void) {
     fprintf(f, "skill_hunting=%d\n", g_skillHuntingOn ? 1 : 0);
     fprintf(f, "zone_locking=%d\n",  g_zoneLockingOn  ? 1 : 0);
     fprintf(f, "game_mode=%d\n",     g_zoneLockingOn ? 1 : 0); /* legacy fallback */
+    {
+        /* 1.9.10 — persist SkillLevelReqs toggle per-character */
+        extern BOOL g_skillLevelReqs;
+        fprintf(f, "skill_level_reqs=%d\n", g_skillLevelReqs ? 1 : 0);
+    }
     fprintf(f, "goal=%d\n", g_apGoal);
     fprintf(f, "starting_skills=%d\n", g_apStartingSkills);
     fprintf(f, "skill_pool_size=%d\n", g_apSkillPoolSize);
@@ -383,6 +419,14 @@ static void SaveStateFile(void) {
     }
 
     fclose(f);
+
+    /* 1.9.10 — atomic rename. See function header comment. */
+    if (!MoveFileExA(tmpPath, path, MOVEFILE_REPLACE_EXISTING)) {
+        DWORD err = GetLastError();
+        Log("SaveStateFile: rename failed (err=%lu) — leaving tmp at %s\n",
+            err, tmpPath);
+        return;
+    }
     Log("SaveStateFile: saved to %s\n", path);
 }
 
@@ -806,9 +850,42 @@ static BOOL LoadStateFile(void) {
 /* Auto-save timer */
 static DWORD g_lastSave = 0;
 
+/* 1.9.10 — dirty-flag pattern for crash-safe incremental save.
+ *
+ * Before 1.9.10 PeriodicSave fired SaveSlots+SaveStateFile every 10 seconds
+ * unconditionally. Any state change made within the 10-second window before
+ * a crash (Alt-F4, D2 crash, OS reboot) was lost: skill point spend, AP item
+ * received, bonus check fired, Reset Point queued, etc.
+ *
+ * The fix: every state-mutation call site flips g_stateDirty via
+ * MarkStateDirty(). PeriodicSave checks the flag on every render-tick
+ * (~25 fps in D2 1.10f) and saves IF dirty AND >=250 ms since last save.
+ * Result:
+ *   - Skill click -> flag flips -> save lands within 250 ms (was 10 s)
+ *   - Crash window shrinks from 10 s to 250 ms (40x improvement)
+ *   - When idle (no state changes), zero disk writes
+ *   - Throttle prevents pathological loops (e.g. rapid AP item burst)
+ *     from flooding disk
+ *
+ * Note: SaveSlots+SaveStateFile are atomic (tmp+rename, 1.9.10) so any
+ * concurrent read by ap_bridge.py is always consistent. */
+static BOOL g_stateDirty = FALSE;
+
+void MarkStateDirty(void) {
+    g_stateDirty = TRUE;
+}
+
 static void PeriodicSave(void) {
     DWORD now = GetTickCount();
-    if (now - g_lastSave > 10000) { /* Every 10 seconds */
+    if (g_stateDirty && (now - g_lastSave) >= 250) {
+        /* Dirty + throttle elapsed -> flush */
+        g_lastSave = now;
+        g_stateDirty = FALSE;
+        SaveSlots();
+        SaveStateFile();
+    } else if (!g_stateDirty && (now - g_lastSave) > 10000) {
+        /* Defensive 10-s heartbeat — catches any mutation that forgot
+         * to call MarkStateDirty. Matches pre-1.9.10 behaviour. */
         g_lastSave = now;
         SaveSlots();
         SaveStateFile();

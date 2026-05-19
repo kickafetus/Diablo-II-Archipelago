@@ -130,6 +130,26 @@ static LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 Coll_ResetOnPlayerGone();   /* 1.9.0 — clear collection flags in mem */
                 Coll_ResetTickState();      /* 1.9.0 — reset gold delta + scan throttle */
             }
+            /* 1.9.10 — restore sgptDT skill-table to vanilla state so the next
+             * character's load isn't reading the previous char's polluted
+             * charclass/reqLevel/class-skill-list. Fixes Marco's "cheat menu
+             * doesn't respond on char B" + "skills can't be picked" symptoms
+             * and Maegis's "skill lost mid-run" reports caused by cross-char
+             * memory leak. Must run BEFORE the per-char global reset below
+             * because Skilltree_OnCharacterUnloadHook reads g_origCharClass /
+             * g_origClassList caches (NOT in g_* globals being zeroed). */
+            {
+                extern void Skilltree_OnCharacterUnloadHook(void);
+                Log("WndProc EXIT[12d]: Skilltree_OnCharacterUnloadHook...\n");
+                Skilltree_OnCharacterUnloadHook();
+            }
+            /* 1.9.10 — clear uber tracking so a mid-Pandemonium-run exit
+             * doesn't leak finale-spawn counts into the next character. */
+            {
+                extern void Ubers_ResetTrackingOnPlayerGone(void);
+                Log("WndProc EXIT[12e]: Ubers_ResetTrackingOnPlayerGone...\n");
+                Ubers_ResetTrackingOnPlayerGone();
+            }
             Log("WndProc EXIT[13]: ResetD2SFile...\n");
             ResetD2SFile(g_charName);
             Log("WndProc EXIT[14]: SaveStateFile (post-reset)...\n");
@@ -158,6 +178,50 @@ static LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
              * per-character, and the gameloop re-resolves it when the next
              * player appears. Zeroing it would force a re-resolve that can
              * briefly drop reinvest opportunities. */
+
+            /* 1.9.10 — AP-mode flag reset. Pre-1.9.10 g_apMode was
+             * sticky-TRUE for the whole DLL lifetime once any character
+             * authed against AP. That meant a NEW character created after
+             * loading an AP char would bake AP-mode settings into its state
+             * file even if the user wanted standalone. Per
+             * feedback_settings_isolation.md the contract is "new char
+             * captures from AP slot_data OR d2arch.ini once and freezes" —
+             * leaving g_apMode=TRUE between chars violates that. The
+             * bridge stays connected; only DLL flags reset so the next
+             * char's LoadAPSettings starts from a known state.
+             * (g_apMode is non-static — declared in d2arch_input.c at
+             * line 481 — accessible directly via unity-build inclusion.) */
+            g_apMode = FALSE;
+            /* g_apConnected stays as-is — the bridge process is still
+             * running and connected to the AP server; if the next char
+             * uses the same slot it can resume immediately. We just don't
+             * trust the cached AP-mode state for fresh-char init. */
+
+            /* 1.9.10 — per-char AP caches that previously leaked across
+             * char switches. All these globals are `static` in their owning
+             * TU and visible to d2arch_main.c via the unity build, so we
+             * write to them directly without extern (which would be a
+             * type-mismatch redefinition under the static keyword). */
+            g_appliedApLoaded = FALSE;
+            g_appliedApCount = 0;
+
+            g_locationOwnersLoaded = FALSE;
+            g_apItemLocationsLoaded = FALSE;
+
+            /* 1.9.10 — pending zone teleport could fire on next char's
+             * first tick if a teleport was queued the moment of exit. */
+            g_pendingZoneTeleport = 0;
+
+            /* 1.9.10 — server-pending counters from char A that hadn't
+             * been consumed by the tick when player exited. Pre-1.9.10
+             * these would be applied to char B's player on first tick
+             * after load. */
+            g_serverPendingGold = 0;
+            g_serverPendingStatPts = 0;
+            g_serverPendingSkillPts = 0;
+            g_pendingGold = 0;
+
+            Log("WndProc EXIT[16]: per-char globals + AP caches + pending counters reset\n");
         }
     }
 

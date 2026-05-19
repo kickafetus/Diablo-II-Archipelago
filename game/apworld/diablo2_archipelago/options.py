@@ -93,6 +93,19 @@ class CustomGoalGoldTarget(Range):
     default = 0
 
 
+class SkillLevelReqs(Toggle):
+    """1.9.10 — Enforce vanilla Skills.txt level requirements in the
+    in-game skill editor. When ON (default), clicking the "+" button on
+    a skill that requires a higher character level than yours is
+    rejected with a notify. When OFF, points can be invested into any
+    unlocked skill regardless of character level — useful for quick
+    cross-class experimentation. Item level/STR/DEX requirements are
+    separately controlled by D2's vanilla engine and are not affected
+    by this toggle (this only affects the skill-investment editor)."""
+    display_name = "Skill Level Requirements"
+    default = 1  # ON by default — matches pre-1.9.10 behaviour
+
+
 # ============================================================
 # Custom Goal toggles — built via factory so the 50+ individual
 # Toggle classes don't bloat this file with manual decls. Each is
@@ -958,6 +971,8 @@ _FIELDS = [
     ("entrance_shuffle",       EntranceShuffle),
     # Filler
     ("traps_enabled",          TrapsEnabled),
+    # 1.9.10 — Level requirement toggle (Maegis #2)
+    ("skill_level_reqs",       SkillLevelReqs),
     # Bonus check categories (1.9.0 — opt-in)
     ("check_shrines",          CheckShrines),
     ("check_urns",             CheckUrns),
@@ -1050,6 +1065,9 @@ OPTION_GROUPS = [
     ]),
     OptionGroup("Filler Items", [
         TrapsEnabled,
+    ]),
+    OptionGroup("Quality of Life", [
+        SkillLevelReqs,
     ]),
     OptionGroup("Bonus Checks", [
         CheckShrines,

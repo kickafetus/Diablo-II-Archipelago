@@ -355,6 +355,34 @@ void Ubers_OnUnitDeathScan(void* pGame, void* pUnit, DWORD txtId, DWORD unitId) 
     }
 }
 
+/* 1.9.10 — Public reset hook called from d2arch_main.c WndProc EXIT.
+ *
+ * Clears u_uberList[] tracking state so a freshly-loaded next character
+ * doesn't inherit char A's mid-Pandemonium-run state. Pre-1.9.10 if char A
+ * spawned 1-2 ubers and exited without finishing the finale, char B's
+ * first uber kill (or first cube transmute) could match against char A's
+ * stale tracker entries — risk of wrong Hellfire Torch drop / wrong
+ * custom-goal bit fired.
+ *
+ * Safe to call when no player is loaded — just zeroes the static state. */
+void Ubers_ResetTrackingOnPlayerGone(void) {
+    int hadEntries = u_uberCount;
+    int hadFinale = u_finaleSpawnedCount;
+    u_uberCount = 0;
+    u_finaleSpawnedCount = 0;
+    u_finaleKillCount = 0;
+    for (int i = 0; i < UBER_TRACK_MAX; i++) {
+        u_uberList[i].guid = 0;
+        u_uberList[i].set = 0;
+        u_uberList[i].monId = 0;
+        u_uberList[i].killed = FALSE;
+    }
+    if (hadEntries > 0 || hadFinale > 0) {
+        Log("UBERS: reset tracking on player-gone (had %d entries, %d finale spawned)\n",
+            hadEntries, hadFinale);
+    }
+}
+
 /* The hook wrapper. Called when D2 reaches output type=1 (Cow Portal)
  * during cube transmute. We get pGame in ECX, pUnit in EDX (player).
  * Return 1 = success (cube consumes inputs), 0 = fail (cube refuses). */

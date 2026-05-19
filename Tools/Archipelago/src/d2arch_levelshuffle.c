@@ -107,7 +107,27 @@ static const DungeonSet g_sets[] = {
      * point = the staircase-from-above tile = "Tower Level 2 stairs"
      * (per Maegis bug report). Fix: surfaceParent=6, members[0]=20. */
     {  6, 1, { 20, 21, 22, 23, 24, 25 }, 6, 0, "Forgotten Tower"     },
-    {  4, 1, { 38 },                  1, 0, "Tristram (portal)"     },
+    /* 1.9.10 — Tristram (level 38, Stony Field portal) REMOVED from
+     * shuffle pool. Reason: shuffling Tristram breaks "The Search for
+     * Cain" quest because:
+     *   1. Player casts portal from Cairn Stones in Stony Field → portal
+     *      destination is hardcoded to area 38 (Tristram)
+     *   2. EntranceShuffle_Tick detects area-change to 38, looks up
+     *      g_shuffleMap[tristram_set_idx] = some_other_set
+     *   3. Queues g_pendingZoneTeleport = destL1 of that other set
+     *   4. Player gets warped OUT of Tristram into the shuffled
+     *      destination BEFORE they ever see Cain's gibbet
+     *   5. Cain quest can't be completed in the Tristram instance
+     *   6. When player progresses to Act 2 town, vanilla D2's
+     *      ACT1Q4_UpdateQuestStateOnActChange auto-progresses Cain's
+     *      quest to QFLAG_PRIMARYGOALDONE (state 13) and Cain
+     *      auto-spawns in Rogue Encampment — but the AP "rescue"
+     *      check would fire too (see #5c for that fix).
+     *
+     * Same precedent as the 1.9.5 Forgotten Tower fix at line 102-108:
+     * a single shufflable set's data wreckage gets surgically removed.
+     * Pool A shrinks from 21 → 20 sets, which Sattolo permutation
+     * handles fine. */
     /* Act 2 */
     { 40, 2, { 47, 48, 49 },          3, 0, "A2 Sewers"             },
     { 41, 2, { 55, 59 },              2, 0, "Stony Tomb"            },

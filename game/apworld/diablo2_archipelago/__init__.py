@@ -424,12 +424,23 @@ class Diablo2ArchipelagoWorld(World):
             # Goal=3 (Collection) treats as Normal-only for AP fill purposes.
             # Goal=4 (Custom) — 1.9.9: scope-aware, mirrors get_active_locations.
             goal_val = self.options.goal.value
+            # 1.9.10 — also track max_act so we don't add gate keys for acts
+            # the player won't physically traverse (narrow custom goals).
+            scope_max_act = 5  # default: full game
             if goal_val == 3:
                 num_difficulties = 1
             elif goal_val == 4:
                 # 1.9.9 — match get_active_locations() scope so we don't
                 # add gate keys for difficulties the player won't visit.
+                # 1.9.10 — also match max_act for the same reason. With
+                # a narrow custom goal like "kill Andariel Normal", scope
+                # is (max_act=1, max_diff=0); only 4 Act 1 Normal gate keys
+                # are physically usable; adding the other 14 Normal keys
+                # (Acts 2-5) blows the progression budget when many EXCLUDED
+                # check categories are also on. Found via 1.9.10 validation
+                # mega-test failure mega_673.
                 _scope_act, _scope_diff = compute_custom_goal_scope(self.options)
+                scope_max_act = _scope_act
                 num_difficulties = _scope_diff + 1
             else:
                 num_difficulties = goal_val + 1  # 0-2 -> 1-3 diffs
@@ -445,6 +456,12 @@ class Diablo2ArchipelagoWorld(World):
                     continue
                 if item_diff >= num_difficulties:
                     continue  # Not played this difficulty
+                # 1.9.10 — skip gate keys for acts beyond scope. The
+                # corresponding gate-location pool is also capped by
+                # max_act in get_active_locations / create_regions, so
+                # these keys would have no destination location to unlock.
+                if act > scope_max_act:
+                    continue
                 zone_keys_in_pool.append((ap_id, name, classification))
                 self.multiworld.itempool.append(self.create_item(name))
 
@@ -483,10 +500,40 @@ class Diablo2ArchipelagoWorld(World):
         # Removed as user-facing option.
         starting = 6
 
-        # Cap pool so total items never exceeds location_count
-        # Total items = (pool_size - starting) skills + zone_keys + filler
-        # We need: (pool_size - starting) + len(zone_keys_in_pool) <= location_count
-        max_skills_in_pool = location_count - len(zone_keys_in_pool)
+        # 1.9.10 — cap pool so total NON-EXCLUDABLE items fit in NON-EXCLUDED
+        # locations. AP's fill algorithm enforces:
+        #   - PROGRESSION + USEFUL items can only land at non-EXCLUDED locations
+        #   - FILLER + TRAP items can land anywhere (excluded or not)
+        # Pre-1.9.10 cap only ensured total_items ≤ total_locations. When
+        # many check categories were toggled ON (lots of EXCLUDED bonus/
+        # collection locations), the SH=ON case would generate 210 USEFUL
+        # skills + 18-54 PROGRESSION gate keys = 228+ non-excludable items
+        # competing for the tiny non-EXCLUDED location pool — FillError.
+        # Found via 1.9.10 exhaustive validation (162 random YAML configs
+        # failed with the old cap, all pass with this fix).
+        #
+        # New formula: count EXCLUDED locations from active set, subtract
+        # from cap so skill pool only fills the available non-excluded slots.
+        # When SH=OFF skills are FILLER (excludable), so they bypass the
+        # tighter cap and fill EXCLUDED slots freely.
+        EXCLUDED_QUEST_TYPES = ("bonus_object", "bonus_gold", "bonus_setpickup",
+                                "extra_cow", "extra_merc", "extra_hfrunes",
+                                "extra_npc", "extra_runeword", "extra_cube",
+                                "collection")
+        excluded_count = sum(1 for (_, _, qtype, _, _, _) in active_locations
+                             if qtype in EXCLUDED_QUEST_TYPES)
+        non_excluded_count = location_count - excluded_count
+
+        if skill_hunting:
+            # SH=ON: skills are USEFUL, must fit non-excluded budget.
+            # Non-excluded space = quest locations + gate locations + levels.
+            # Items competing for this space: skills + zone_keys.
+            max_skills_in_pool = non_excluded_count - len(zone_keys_in_pool)
+        else:
+            # SH=OFF: skills are FILLER (1.9.10 fix), can fill anywhere
+            # including EXCLUDED. The only constraint is total location count.
+            max_skills_in_pool = location_count - len(zone_keys_in_pool)
+
         if max_skills_in_pool < 0:
             max_skills_in_pool = 0
         if pool_size - starting > max_skills_in_pool:
@@ -510,17 +557,33 @@ class Diablo2ArchipelagoWorld(World):
         # 1.8.0 classification rules (per user spec 2026-04-24):
         #   Skill Hunting ON  -> skills = USEFUL (not progression)
         #   Zone Locking  ON  -> gate keys = PROGRESSION (already set in GATE_KEY_ITEMS)
-        #   Both OFF          -> story quests' rewards stay progression (default in items.py)
-        # So skills default to progression in items.py (tier-1), but we
-        # downgrade them to useful when skill_hunting is ON to match the spec.
+        #
+        # 1.9.10 — Skill Hunting OFF: skills are FILLER (was: progression,
+        # which was wrong). When SH=OFF the DLL initializes 30 class-native
+        # skills at character creation; AP-delivered skill items don't gate
+        # any actual progression (they're cosmetic, since the player already
+        # has all class skills). Marking them progression was producing:
+        #   (a) "Not enough locations for progression items" FillErrors in
+        #       configs with many EXCLUDED check categories — 210 skills+keys
+        #       trying to fit into a small non-EXCLUDED quest pool.
+        #   (b) "Not enough filler items for excluded locations" FillErrors —
+        #       because skills hogged the filler-slot budget despite not
+        #       actually being filler-class.
+        # Fix: SH=OFF skills become FILLER (excludable). Found via 1.9.10
+        # exhaustive validation: 162/562 random YAMLs failed with the old
+        # rule, all rebalance to passing with this fix.
         skill_items = []
         for d2_id, name, classification in ordered_pool:
             item = self.create_item(name)
             if skill_hunting:
+                # SH=ON: skills are USEFUL (player needs them but no specific
+                # one gates progression in our logic graph)
                 item.classification = ItemClassification.useful
-            # Note: if skill_hunting OFF, keep original tier-1/tier-2 classification
-            # (progression or useful based on items.py definitions). This lets skills
-            # still gate progression in non-skill-hunt modes where they're meaningful.
+            else:
+                # SH=OFF: skills are FILLER. DLL gives the 30 class-native
+                # skills automatically at char creation; AP-delivered skill
+                # items are cosmetic only and can safely fill EXCLUDED slots.
+                item.classification = ItemClassification.filler
             skill_items.append(item)
 
         # Pre-place starting skills as "start inventory" so player has them immediately
@@ -842,10 +905,27 @@ class Diablo2ArchipelagoWorld(World):
             # 1.9.0: System 1 — dead-end cave entrance shuffle (Pool A:
             # Acts 1+2, Pool B: Acts 3+4+5). DLL applies on character load
             # via ApplyEntranceShuffle, frozen into per-char state file.
-            "entrance_shuffle": self.options.entrance_shuffle.value,
+            # 1.9.10 — auto-disable when Zone Locking is ON. The two features
+            # are fundamentally incompatible: Zone Locking's apworld access
+            # rules read VANILLA zone IDs (regions.py:24-60 ZONE_KEY_AREAS),
+            # while Entrance Shuffle's DLL warps players via a per-character
+            # seeded shuffle map the apworld never sees. Result: gate keys
+            # gate the wrong zones, players warped into locked regions get
+            # bounced back to town, the F4 zone tracker shows wrong bosses.
+            # 5 distinct failure scenarios documented in 1.9.10 research.
+            # Proper integration ("shuffled-map-aware access rules") is a
+            # 1.10.0+ feature; until then auto-disable preserves player
+            # intent on whichever feature they prioritise.
+            "entrance_shuffle": (
+                0 if self.options.zone_locking.value
+                else self.options.entrance_shuffle.value
+            ),
             # 1.8.4: filler toggles — bridge writes to ap_settings.dat,
             # DLL forces g_fillerTrapPct=0 when traps_enabled=0
             "traps_enabled":    self.options.traps_enabled.value,
+            # 1.9.10 — Skill level requirement toggle (Maegis #2). When 0,
+            # editor "+" button bypasses vanilla Skills.txt reqlevel check.
+            "skill_level_reqs": self.options.skill_level_reqs.value,
             # 1.9.0: Bonus check categories (opt-in, filler-only).
             # DLL hooks shrine/urn/barrel/chest interactions and fires
             # the matching AP location via the escalating-chance helper

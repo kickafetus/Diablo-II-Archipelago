@@ -139,6 +139,26 @@ static BOOL SkillIdInList(int skillId, const int* list) {
     return FALSE;
 }
 
+/* 1.9.10 — vanilla class-skill-list cache for OnCharacterUnload restore.
+ *
+ * Background: WriteClassSkillList (below) overwrites sgptDT+0xBA0..0xBC0
+ * with our custom 30-skill layout for the player's current class. Pre-1.9.10
+ * had no backup — when the player switched characters in the same session
+ * (esp. across classes), the in-memory class skill list stayed in the
+ * previous character's class-X custom layout. Char B's class-Y UI would
+ * read from a corrupted list (wrong skill IDs, wrong count) → cheat menu
+ * wouldn't respond, skills couldn't be picked, etc.
+ *
+ * Cache layout: g_origClassList[cls][30] holds the original short[] skill
+ * IDs for each class (0..6), g_origClassCounts[cls] holds the original
+ * count. Populated lazily on first WriteClassSkillList call per class.
+ * Restored in Skilltree_OnCharacterUnloadHook before char-state globals
+ * are cleared. */
+#define VANILLA_CLASS_LIST_STRIDE 30
+static short g_origClassList[7][VANILLA_CLASS_LIST_STRIDE];
+static int   g_origClassCounts[7];
+static BOOL  g_origClassListCached[7] = { FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE };
+
 /* 1.9.1 — vanilla-anim cache for the per-class repatch path.
  *
  * The 1.7.1 boot-time animation patch unconditionally rewrote class-specific anim
@@ -374,6 +394,136 @@ void Skilltree_OnCharacterLoadHook(void) {
         return;
     }
     RestoreNativeAnimsForClass(pc);
+}
+
+/* 1.9.10 — Public hook called from d2arch_main.c WndProc EXIT (char-unload path).
+ *
+ * Purpose: undo every per-character in-memory patch we applied to sgptDataTables
+ * so the next character starts from a clean vanilla state — equivalent to having
+ * restarted the entire game. Pre-1.9.10 had no such hook, so:
+ *   - PatchSkillForPlayer's charclass overrides stayed in place across chars
+ *     (char B's skill table still owned by char A's class)
+ *   - WriteClassSkillList's custom 30-skill layout for char A's class persisted,
+ *     so char B (different class) would read the wrong skill list
+ *   - RestoreNativeAnimsForClass's g_repatchedForClass short-circuit would skip
+ *     repatching if char A and char B were the same class — even though anim
+ *     state may have been mutated by intermediate code paths
+ *
+ * Symptoms fixed: Marco's reported "cheat menu doesn't respond on char B",
+ * "skills can't be picked", "other weird things"; Maegis's "skill lost mid-run".
+ *
+ * Restoration order:
+ *   1. Walk g_origCharClass[] cache → write vanilla charclass back into
+ *      sgptDT.SkillsTxt[i].charclass for every skill PatchSkillForPlayer touched.
+ *   2. Reset reqLevel and reqSkill[0..2] to safe defaults (1 / -1) since we
+ *      don't cache the vanilla per-skill reqLevel.
+ *   3. Restore vanilla class skill list at sgptDT+0xBA0..0xBC0 for every
+ *      class we touched (via g_origClassList[cls][] cache).
+ *   4. Reset g_repatchedForClass = -2 so the next OnCharacterLoad triggers
+ *      a fresh RestoreNativeAnimsForClass walk for the new char's class.
+ */
+void Skilltree_OnCharacterUnloadHook(void) {
+    DWORD dt = GetSgptDT();
+    if (!dt) {
+        Log("Skilltree_OnCharacterUnloadHook: no sgptDT (skipping)\n");
+        return;
+    }
+
+    int charclassRestored = 0;
+    int reqLevelReset = 0;
+    int classListsRestored = 0;
+
+    __try {
+        DWORD arr = *(DWORD*)(dt + DT_SKILLS);
+        int cnt = *(int*)(dt + DT_SKILLS_N);
+        if (!arr || cnt <= 0) {
+            Log("Skilltree_OnCharacterUnloadHook: bad skills array (skipping)\n");
+            return;
+        }
+
+        DWORD oldProt;
+
+        /* Step 1+2: walk per-skill charclass cache (lives in d2arch_zones.c
+         * shared with this TU via unity-build) and restore vanilla charclass +
+         * reset reqLevel/reqSkill that PatchSkillForPlayer + SetSkillTierReqs
+         * mutated. */
+        if (g_origCacheInit) {
+            int walkN = (cnt < 400) ? cnt : 400;
+            for (int i = 0; i < walkN; i++) {
+                short cached = g_origCharClass[i];
+                if (cached == -1) continue; /* skill never patched */
+
+                DWORD rec = arr + i * SKT_SIZE;
+
+                /* Restore vanilla charclass */
+                VirtualProtect((void*)(rec + SKT_CHARCLASS), 1, PAGE_READWRITE, &oldProt);
+                *(BYTE*)(rec + SKT_CHARCLASS) = (BYTE)cached;
+                VirtualProtect((void*)(rec + SKT_CHARCLASS), 1, oldProt, &oldProt);
+                charclassRestored++;
+
+                /* Reset reqLevel + reqSkill[0..2] (we don't cache vanilla
+                 * values per skill; reqLevel=1 is universally safe and
+                 * reqSkill=-1 means no prerequisite). The next character
+                 * load will re-apply via PatchSkillForPlayer + SetSkillTierReqs
+                 * for skills it actually uses. */
+                VirtualProtect((void*)(rec + SKT_REQLEVEL), 2, PAGE_READWRITE, &oldProt);
+                *(WORD*)(rec + SKT_REQLEVEL) = 1;
+                VirtualProtect((void*)(rec + SKT_REQLEVEL), 2, oldProt, &oldProt);
+                reqLevelReset++;
+
+                VirtualProtect((void*)(rec + SKT_REQSKILL0), 6, PAGE_READWRITE, &oldProt);
+                *(short*)(rec + SKT_REQSKILL0) = -1;
+                *(short*)(rec + SKT_REQSKILL1) = -1;
+                *(short*)(rec + SKT_REQSKILL2) = -1;
+                VirtualProtect((void*)(rec + SKT_REQSKILL0), 6, oldProt, &oldProt);
+            }
+        }
+
+        /* Step 3: restore class skill list at sgptDT+0xBA0..0xBC0 for every
+         * class we cached. WriteClassSkillList writes custom 30-skill layout
+         * for the active class; if not restored, char B's class-Y UI reads
+         * char A's class-X layout. */
+        {
+            int stride = *(int*)(dt + 0xBA8);
+            short* list = *(short**)(dt + 0xBAC);
+            int* counts = *(int**)(dt + 0xBA4);
+            if (list && counts && stride > 0) {
+                for (int cls = 0; cls < 7; cls++) {
+                    if (!g_origClassListCached[cls]) continue;
+                    short* classStart = list + cls * stride;
+                    int copyN = (stride < VANILLA_CLASS_LIST_STRIDE)
+                                ? stride : VANILLA_CLASS_LIST_STRIDE;
+                    VirtualProtect(classStart, stride * sizeof(short),
+                                   PAGE_READWRITE, &oldProt);
+                    for (int i = 0; i < copyN; i++) {
+                        classStart[i] = g_origClassList[cls][i];
+                    }
+                    VirtualProtect(classStart, stride * sizeof(short),
+                                   oldProt, &oldProt);
+
+                    VirtualProtect(&counts[cls], sizeof(int),
+                                   PAGE_READWRITE, &oldProt);
+                    counts[cls] = g_origClassCounts[cls];
+                    VirtualProtect(&counts[cls], sizeof(int),
+                                   oldProt, &oldProt);
+                    classListsRestored++;
+                }
+            }
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        Log("Skilltree_OnCharacterUnloadHook: EXCEPTION\n");
+    }
+
+    /* Step 4: reset repatch sentinel so next char load triggers fresh anim
+     * walk. Don't clear g_animPatchApplied — that's the boot-once A1
+     * fallback gate; clearing it would re-run PatchAllSkillAnimations on
+     * next char load which would re-cache vanilla anims that may now be
+     * in an inconsistent state. The anim cache (g_origAnim,
+     * g_origNativeClass) is built once at boot and is correct forever. */
+    g_repatchedForClass = -2;
+
+    Log("Skilltree_OnCharacterUnloadHook: restored charclass=%d, reqLevel=%d, classLists=%d\n",
+        charclassRestored, reqLevelReset, classListsRestored);
 }
 
 /* Get SkillDesc index for a skill ID */
@@ -629,6 +779,20 @@ static void WriteClassSkillList(void) {
         short* classStart = list + cls * stride;
         DWORD op;
         VirtualProtect(classStart, stride * sizeof(short), PAGE_READWRITE, &op);
+
+        /* 1.9.10 — cache vanilla classStart[] + counts[cls] on first write per
+         * class, BEFORE we mutate. Used by Skilltree_OnCharacterUnloadHook
+         * to restore vanilla state on char exit, preventing the next char's
+         * cheat menu / skill UI from reading char A's polluted list. */
+        if (cls >= 0 && cls < 7 && !g_origClassListCached[cls]) {
+            int copyN = (stride < VANILLA_CLASS_LIST_STRIDE) ? stride : VANILLA_CLASS_LIST_STRIDE;
+            for (int i = 0; i < copyN; i++) g_origClassList[cls][i] = classStart[i];
+            for (int i = copyN; i < VANILLA_CLASS_LIST_STRIDE; i++) g_origClassList[cls][i] = -1;
+            g_origClassCounts[cls] = origCount;
+            g_origClassListCached[cls] = TRUE;
+            Log("WriteClassSkillList: cached vanilla list for class %d (origCount=%d)\n",
+                cls, origCount);
+        }
 
         /* Collect original skills not in our custom list */
         short origSkills[30];

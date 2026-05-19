@@ -462,12 +462,29 @@ def create_regions(world: "Diablo2ArchipelagoWorld") -> None:
     if zone_locking:
         open_region = _build_gate_region_tree(world, menu_region, active_locations, max_act, num_diffs)
 
+        # 1.9.10 — set of all active location names. Used by the level-
+        # milestone access-rule builder to filter prereqs that don't
+        # exist in the current scope (e.g. Hell prereqs in a Normal-only
+        # seed should be silently dropped, not referenced and KeyError).
+        active_loc_names = {name for (_, name, _, _, _, _) in active_locations}
+
         # Place each non-gate location in open_region with access rule
         # derived from zone → (act, region_num)
+        # 1.9.10 — added "collection" to ZL_BONUS_TYPES.
+        # Background: Goal=3 (Gold Collection) emits collection-event
+        # locations with negative quest_ids (loc_id offsets in the
+        # COLL_LOC_BASE 50000 range). These have no zone_id mapping,
+        # so the loop below would fall through to the ALWAYS_OPEN_ZONES
+        # branch with no access rule, letting AP fill place progression
+        # items (gate keys etc.) at collection-event locations like
+        # "Collection: Zod Rune" — a hard softlock since Zod rune drops
+        # at ~1/5000 per Hell L99 kill. Marking as EXCLUDED forces
+        # filler-only placement, same as the bonus/extra check classes.
         from BaseClasses import LocationProgressType
         ZL_BONUS_TYPES = ("bonus_object", "bonus_gold", "bonus_setpickup",
                           "extra_cow", "extra_merc", "extra_hfrunes",
-                          "extra_npc", "extra_runeword", "extra_cube")
+                          "extra_npc", "extra_runeword", "extra_cube",
+                          "collection")
         for quest_id, loc_name, quest_type, classification, loc_id, diff in active_locations:
             if quest_type == "gate":
                 continue  # already placed by _build_gate_region_tree
@@ -502,11 +519,21 @@ def create_regions(world: "Diablo2ArchipelagoWorld") -> None:
                 loc = world.create_location(loc_name, loc_id, open_region)
                 open_region.locations.append(loc)
                 level_val = QUEST_ID_TO_LEVEL.get(quest_id, 0)
-                prereq_loc = _level_milestone_prereq(level_val, diff)
-                if prereq_loc:
-                    def _make_level_rule(prl, p=player):
-                        return lambda state: state.can_reach_location(prl, p)
-                    loc.access_rule = _make_level_rule(prereq_loc)
+                prereq_locs = _level_milestone_prereq(level_val, diff)
+                # 1.9.10 — _level_milestone_prereq now returns a list (or None).
+                # All listed prereqs must be reachable. Filter against active
+                # location set so we don't reference locations that don't
+                # exist in the current scope (e.g. Hell milestones in a
+                # Normal-only scope shouldn't even be generated, but
+                # belt-and-suspenders).
+                if prereq_locs:
+                    valid = [pl for pl in prereq_locs if pl in active_loc_names]
+                    if valid:
+                        def _make_level_rule(prls, p=player):
+                            return lambda state: all(
+                                state.can_reach_location(pl, p) for pl in prls
+                            )
+                        loc.access_rule = _make_level_rule(tuple(valid))
                 continue
 
             # For quest locations: determine physical zone + set access rule
@@ -677,9 +704,14 @@ def create_regions(world: "Diablo2ArchipelagoWorld") -> None:
     # progression items would soft-lock multiworld players. Filler-only
     # items at these slots are harmless if never collected.
     from BaseClasses import LocationProgressType
+    # 1.9.10 — added "collection" alongside bonus/extra types so Goal=3
+    # collection-event locations get filler-only (EXCLUDED) treatment,
+    # preventing AP fill from placing progression items at "Collection: Zod
+    # Rune" etc. where the player may never trigger the check.
     BONUS_TYPES = ("bonus_object", "bonus_gold", "bonus_setpickup",
                    "extra_cow", "extra_merc", "extra_hfrunes",
-                   "extra_npc", "extra_runeword", "extra_cube")
+                   "extra_npc", "extra_runeword", "extra_cube",
+                   "collection")
     for quest_id, loc_name, quest_type, classification, loc_id, diff in active_locations:
         act_num = _quest_id_to_act(quest_id)
         if act_num in act_regions:
@@ -694,11 +726,11 @@ def diff_name_fromdiff(d):
 
 
 def _level_milestone_prereq(level: int, diff: int):
-    """1.8.5 fix (R9) — Map a level-milestone (level, difficulty) to the
-    name of an act-boss location that the player must be able to reach
-    before the milestone is considered satisfiable.
+    """1.8.5 fix (R9) — Map a level-milestone (level, difficulty) to a list of
+    locations the player must be able to reach before the milestone is
+    considered satisfiable.
 
-    Returns the location name (str) or None when no prerequisite is
+    Returns a list of location names (str) or None when no prerequisites are
     needed (low-level milestones in the starting region).
 
     The intent is purely to push level milestones into spheres LATER
@@ -707,6 +739,14 @@ def _level_milestone_prereq(level: int, diff: int):
     locations because they have no access rules — leaving the player
     to grind to that level inside the starting region with no other
     sources of items, which is exactly the soft-lock that R9 reported.
+
+    1.9.10 fix (#3b) — Hell-tier level milestones (L60-75) used to gate
+    only on NM Baal kill, which meant AP fill could legitimately place
+    Hell-difficulty Act 1 gate keys at "Reach Level 60 (Hell)" — the
+    player would have NM access but no Hell Act 1 R3+ access, forcing
+    them to grind to L60 in Hell Act 1 R1+R2 only. Same pattern for
+    NM-tier (L35-55). Now both tiers also require the same-diff Act 1
+    boss kill so the grinding location actually has reachable monsters.
 
     Diff parameter follows the apworld convention (0=Normal, 1=NM,
     2=Hell). Boss location names get the difficulty suffix appended.
@@ -719,19 +759,28 @@ def _level_milestone_prereq(level: int, diff: int):
 
     # Within current difficulty: gate level milestones behind act bosses.
     if 16 <= level <= 25:
-        # Levels 20: must be in Act 2 → Andariel kill at this diff.
-        return at_diff("Sisters to the Slaughter", diff)
+        # Level 20: must be in Act 2 → Andariel kill at this diff.
+        return [at_diff("Sisters to the Slaughter", diff)]
     if 26 <= level <= 34:
         # Level 30: must be deep into the run → Mephisto at this diff.
-        return at_diff("The Guardian", diff)
+        return [at_diff("The Guardian", diff)]
 
     # Level 35+ implies Nightmare or Hell access. Require previous-diff
-    # Baal kill so the milestone lives in the appropriate difficulty.
+    # Baal kill AND same-diff Act 1 boss kill so the player has access
+    # to the difficulty's monsters AND can grind there efficiently.
     if 35 <= level <= 55:
-        # NM tier — require Normal Baal.
-        return "Eve of Destruction"
+        # NM tier — require Normal Baal (diff transition) AND NM Andariel
+        # (so they're inside NM with real monster pool, not stuck in Normal).
+        return [
+            "Eve of Destruction",
+            at_diff("Sisters to the Slaughter", 1),  # NM Andariel
+        ]
     if level >= 60:
-        # Hell tier — require NM Baal.
-        return "Eve of Destruction (Nightmare)"
+        # Hell tier — require NM Baal (diff transition) AND Hell Andariel
+        # (so they're inside Hell with real monster pool).
+        return [
+            "Eve of Destruction (Nightmare)",
+            at_diff("Sisters to the Slaughter", 2),  # Hell Andariel
+        ]
 
     return None

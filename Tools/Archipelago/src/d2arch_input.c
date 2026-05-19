@@ -504,6 +504,19 @@ BOOL g_apPolling         = FALSE; /* 1.9.0: TRUE after the user clicks Connect
 static BOOL g_skillHuntingOn    = TRUE;  /* default ON (old behaviour) */
 static BOOL g_zoneLockingOn     = FALSE; /* default OFF */
 
+/* 1.9.10: Skill investment level requirement toggle (Maegis #2).
+ * Pre-1.9.10 the editor's "+" button rejected clicks when
+ * char_level < skills.txt reqlevel for the target skill. Some users
+ * want this off so they can dump points into high-tier skills early.
+ * Default ON preserves pre-1.9.10 behaviour. Toggleable via:
+ *   d2arch.ini [settings] SkillLevelReqs=0
+ *   AP slot_data "skill_level_reqs": 0
+ * Note: this only affects the editor-side block; the in-memory
+ * Skills.txt rec.reqlevel is ALSO patched to 1/10/20 by
+ * SetSkillTierReqs (tier formula), so D2's own engine never
+ * blocks based on a strict vanilla reqlevel anyway. */
+BOOL g_skillLevelReqs = TRUE;
+
 /* 1.8.0: settings are "frozen at character creation" per user spec. Once
  * a character is loaded and its state file has been read (or created),
  * this flag goes TRUE and subsequent LoadAPSettings calls (e.g. from a
