@@ -517,6 +517,19 @@ static BOOL g_zoneLockingOn     = FALSE; /* default OFF */
  * blocks based on a strict vanilla reqlevel anyway. */
 BOOL g_skillLevelReqs = TRUE;
 
+/* 1.9.12: Item investment level/STR/DEX requirement toggle (Maegis #2
+ * second half). When TRUE (default), vanilla loot keeps its native
+ * level/str/dex equip requirements. When FALSE, the F1 Collection
+ * inventory walk strips stats 91/92/93 from every observed item, making
+ * any item equippable on any character.
+ *
+ * AP-delivered items always have these stripped (since 1.9.4) regardless
+ * of this toggle — the toggle ONLY affects vanilla-source items
+ * (monster drops, shop, gambling, cube outputs).
+ *
+ * d2arch.ini [settings] ItemLevelReqs=0   (or =1 to keep vanilla, default) */
+BOOL g_itemLevelReqs = TRUE;
+
 /* 1.8.0: settings are "frozen at character creation" per user spec. Once
  * a character is loaded and its state file has been read (or created),
  * this flag goes TRUE and subsequent LoadAPSettings calls (e.g. from a

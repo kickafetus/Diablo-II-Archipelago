@@ -1,0 +1,8 @@
+ModStr1j	Fire Resist
+ModStr1k	Cold Resist
+ModStr1l	Lightning Resist
+ModStr1q	to Maximum Lightning Damage
+ModStr1r	to Minimum Lightning Damage
+ModStr5u	to Maximum Fire Resist
+ModStr5v	to Maximum Cold Resist
+ModStr5w	to Maximum Lightning Resist

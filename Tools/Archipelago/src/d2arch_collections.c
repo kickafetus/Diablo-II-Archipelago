@@ -1446,6 +1446,36 @@ void Coll_ProcessItem(void* pItem, BOOL requireLegit) {
         __except(EXCEPTION_EXECUTE_HANDLER) { currentFlags = 0; }
     }
 
+    /* 1.9.12 — ItemLevelReqs toggle (Maegis #2 second half).
+     *
+     * When g_itemLevelReqs == FALSE, strip stats 91/92/93 (str/lvl/dex
+     * requirements) from EVERY observed item so the player can equip
+     * anything regardless of level. AP-delivered items already get this
+     * unconditionally (d2arch_gameloop.c:1111-1113 + 1224-1226); this
+     * extends the same behavior to vanilla loot, shop items, gambling,
+     * and cube outputs.
+     *
+     * Idempotent: fnSetStat(91, 0) on an already-zero stat is a no-op.
+     * Called from EVERY inventory observation (pickup + full inv walk),
+     * so a single-tick gap between pickup and equip never blocks the
+     * player when the toggle is off.
+     *
+     * Default ON preserves vanilla equip restrictions for users who
+     * want them. Opt-out via d2arch.ini [settings] ItemLevelReqs=0.
+     *
+     * Unity build: g_itemLevelReqs is defined in d2arch_input.c (included
+     * before us via d2arch.c). fnSetStat is static in d2arch_api.c (also
+     * included before us). Both visible without extern. */
+    if (!g_itemLevelReqs) {
+        if (fnSetStat) {
+            __try {
+                fnSetStat(pItem, 91, 0, 0);  /* item_strengthreq  -> 0 */
+                fnSetStat(pItem, 92, 1, 0);  /* item_levelreq     -> 1 */
+                fnSetStat(pItem, 93, 0, 0);  /* item_dexterityreq -> 0 */
+            } __except(EXCEPTION_EXECUTE_HANDLER) {}
+        }
+    }
+
     if (requireLegit) {
         /* Two-flag enforcement. The inventory-walk we're called from
          * already proves Flag B (item is in the player's possession).

@@ -1003,6 +1003,20 @@ static void LoadAPSettings(void) {
             extern BOOL g_skillLevelReqs;
             g_skillLevelReqs = GetPrivateProfileIntA("settings", "SkillLevelReqs", 1, iniPath) != 0;
         }
+        /* 1.9.12 — ItemLevelReqs toggle (Maegis #2 second half).
+         * Default ON (preserve vanilla behavior). When OFF, the F1
+         * Collection inventory walk strips stats 91/92/93 (str/lvl/dex
+         * requirements) from EVERY observed item — vanilla loot,
+         * shop, gambling, AP-delivered. Effectively lets any character
+         * equip any item regardless of level/STR/DEX.
+         *
+         * AP-delivered items already have these stripped unconditionally
+         * (see d2arch_gameloop.c:1111-1113 and 1224-1226), so this toggle
+         * only changes behavior for vanilla-source items. */
+        {
+            extern BOOL g_itemLevelReqs;
+            g_itemLevelReqs = GetPrivateProfileIntA("settings", "ItemLevelReqs", 1, iniPath) != 0;
+        }
         /* 1.8.0 cleanup: TreasureCows INI parse removed — pending reimplementation */
         g_xpMultiplier = GetPrivateProfileIntA("settings", "XPMultiplier", 1, iniPath);
         if (g_xpMultiplier < 1) g_xpMultiplier = 1;
