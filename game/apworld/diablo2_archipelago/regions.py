@@ -634,15 +634,37 @@ def create_regions(world: "Diablo2ArchipelagoWorld") -> None:
 
         return
 
-    # === SKILL HUNT (zone_locking=False): simple act regions ===
-    act_regions: dict[int, Region] = {}
-    for act_num in range(1, max_act + 1):
-        region = Region(f"Act {act_num}", player, multiworld)
-        multiworld.regions.append(region)
-        act_regions[act_num] = region
+    # === SKILL HUNT (zone_locking=False) ===
+    #
+    # 1.9.11 — per-difficulty act regions.
+    #
+    # Pre-1.9.11 the skill_hunt branch created one region per act with all
+    # difficulties collapsed into it. Menu → Act 1 → Act 2 → ... was boss-gated
+    # but every difficulty's locations lived in the same region, so an NM Den
+    # of Evil check was reachable directly from Menu with no requirement to
+    # have beaten Normal Baal first. AP fill would happily place progression
+    # items at NM/Hell locations in sphere 1, defeating multiworld pacing and
+    # potentially creating "you need to be in Hell to find the key that
+    # unlocks Hell" loops if multiple slots cross-reference.
+    #
+    # 1.9.11 fix: act_regions is now keyed by (act_num, diff). Difficulty
+    # transitions (Normal → NM → Hell) are gated on the act-5-end boss kill
+    # ("Eve of Destruction") at the previous difficulty. For max_act < 5 the
+    # gate uses the last present act's boss kill instead. Locations are
+    # placed in the (act, diff) region matching their tuple's diff field, so
+    # NM Den of Evil ends up in Act 1 Nightmare which is only reachable
+    # after Normal Baal (or last-act boss in narrow scopes).
+    DIFF_SUFFIX  = ["", " (Nightmare)", " (Hell)"]
+    DIFF_NAME    = ["Normal", "Nightmare", "Hell"]
+    act_regions: dict[tuple[int, int], Region] = {}
+    for diff in range(num_diffs):
+        for act_num in range(1, max_act + 1):
+            region = Region(f"Act {act_num} {DIFF_NAME[diff]}", player, multiworld)
+            multiworld.regions.append(region)
+            act_regions[(act_num, diff)] = region
 
-    if 1 in act_regions:
-        menu_region.connect(act_regions[1])
+    if (1, 0) in act_regions:
+        menu_region.connect(act_regions[(1, 0)])
 
     boss_connections = [
         (1, 2, "Sisters to the Slaughter"),
@@ -650,44 +672,65 @@ def create_regions(world: "Diablo2ArchipelagoWorld") -> None:
         (3, 4, "The Guardian"),
         (4, 5, "Terror's End"),
     ]
+    # Last-act boss (used to gate difficulty transitions). max_act can be
+    # 1..5 for narrow Custom Goal scopes.
+    LAST_ACT_BOSS = {
+        1: "Den of Evil",
+        2: "Sisters to the Slaughter",
+        3: "Seven Tombs",
+        4: "The Guardian",
+        5: "Eve of Destruction",
+    }
     active_loc_names = {name for (_, name, _, _, _, _) in active_locations}
 
-    # 1.9.9 — Determine which difficulty variants of each boss kill exist
-    # in the slot. For goal=4 (Custom), narrower scopes may not generate
-    # NM/Hell variants — referencing them in the lambda would raise
-    # KeyError during fill. Only check variants that actually exist.
-    def _boss_has_diff(base_loc: str, diff: int) -> bool:
-        if diff == 0:
-            return base_loc in active_loc_names
-        suffix = " (Nightmare)" if diff == 1 else " (Hell)"
-        return (base_loc + suffix) in active_loc_names
+    def _loc_at(base: str, diff: int) -> str:
+        return base + DIFF_SUFFIX[diff]
 
-    for from_act, to_act, boss_loc in boss_connections:
-        if from_act in act_regions and to_act in act_regions:
-            if boss_loc in active_loc_names:
-                # Build a list of every diff variant of this boss kill
-                # that's present in the active set. ANY of them satisfies
-                # the act transition (player can advance the act on any
-                # difficulty they've reached).
-                variants = []
-                if _boss_has_diff(boss_loc, 0):
-                    variants.append(boss_loc)
-                if _boss_has_diff(boss_loc, 1):
-                    variants.append(boss_loc + " (Nightmare)")
-                if _boss_has_diff(boss_loc, 2):
-                    variants.append(boss_loc + " (Hell)")
-                act_regions[from_act].connect(
-                    act_regions[to_act],
-                    f"Act {from_act} -> Act {to_act}",
-                    lambda state, vs=tuple(variants), p=player: any(
-                        state.can_reach_location(v, p) for v in vs
-                    ),
+    # Within each difficulty: chain act 1 → 2 → ... → max_act, boss-gated.
+    for diff in range(num_diffs):
+        for from_act, to_act, boss_loc_base in boss_connections:
+            if (from_act, diff) not in act_regions or (to_act, diff) not in act_regions:
+                continue
+            boss_loc_diff = _loc_at(boss_loc_base, diff)
+            if boss_loc_diff in active_loc_names:
+                act_regions[(from_act, diff)].connect(
+                    act_regions[(to_act, diff)],
+                    f"Act {from_act} -> Act {to_act} ({DIFF_NAME[diff]})",
+                    lambda state, p=player, bl=boss_loc_diff:
+                        state.can_reach_location(bl, p),
                 )
             else:
-                act_regions[from_act].connect(
-                    act_regions[to_act],
-                    f"Act {from_act} -> Act {to_act}",
+                # Boss-kill location wasn't included in this slot's pool
+                # (e.g. quest_acts toggle off, or Custom Goal trimmed it
+                # out). Fall back to an unconditional connection so the
+                # downstream act is still reachable.
+                act_regions[(from_act, diff)].connect(
+                    act_regions[(to_act, diff)],
+                    f"Act {from_act} -> Act {to_act} ({DIFF_NAME[diff]})",
                 )
+
+    # Across difficulties: end of one diff → start of next, gated on the
+    # last-present-act's boss kill at the previous diff.
+    last_boss_base = LAST_ACT_BOSS.get(max_act, "Eve of Destruction")
+    for diff in range(num_diffs - 1):
+        if (max_act, diff) not in act_regions or (1, diff + 1) not in act_regions:
+            continue
+        gate_loc = _loc_at(last_boss_base, diff)
+        if gate_loc in active_loc_names:
+            act_regions[(max_act, diff)].connect(
+                act_regions[(1, diff + 1)],
+                f"{DIFF_NAME[diff]} complete -> {DIFF_NAME[diff + 1]}",
+                lambda state, p=player, bl=gate_loc:
+                    state.can_reach_location(bl, p),
+            )
+        else:
+            # Same fallback as within-diff: if the gate location is missing
+            # from the pool, connect unconditionally rather than break
+            # reachability entirely.
+            act_regions[(max_act, diff)].connect(
+                act_regions[(1, diff + 1)],
+                f"{DIFF_NAME[diff]} complete -> {DIFF_NAME[diff + 1]}",
+            )
 
     # SKILL HUNT mode: locations placed in act_regions with no per-location
     # access rule. Skills are useful (not progression) so AP fill never
@@ -714,11 +757,14 @@ def create_regions(world: "Diablo2ArchipelagoWorld") -> None:
                    "collection")
     for quest_id, loc_name, quest_type, classification, loc_id, diff in active_locations:
         act_num = _quest_id_to_act(quest_id)
-        if act_num in act_regions:
-            loc = world.create_location(loc_name, loc_id, act_regions[act_num])
+        # 1.9.11 — locations placed in the (act, diff) region matching
+        # their own diff field (was: act-only, all diffs collapsed). This
+        # is what makes sphere depth work in skill_hunt mode.
+        if (act_num, diff) in act_regions:
+            loc = world.create_location(loc_name, loc_id, act_regions[(act_num, diff)])
             if quest_type in BONUS_TYPES:
                 loc.progress_type = LocationProgressType.EXCLUDED
-            act_regions[act_num].locations.append(loc)
+            act_regions[(act_num, diff)].locations.append(loc)
 
 
 def diff_name_fromdiff(d):

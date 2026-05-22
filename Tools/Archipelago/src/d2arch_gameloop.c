@@ -2609,6 +2609,20 @@ static void CheckWaypoints(void) {
     if (curArea <= 0 || IsTown(curArea)) return;
     if (curArea >= 200) return;
 
+    /* 1.9.11 (B10 fix) — skip during pending zone teleport.
+     *
+     * When entrance shuffle warps the player to a new zone, the area ID
+     * briefly reads as the source zone before D2 updates it to the dest
+     * zone. A waypoint scan in this window could either (a) double-fire
+     * the source zone's WP check, or (b) miss the destination's WP fire
+     * because the room scan is on the wrong zone's rooms.
+     *
+     * Skip entirely if a teleport is pending. The next tick (after the
+     * pending counter clears in d2arch_gameloop.c:770) will do the scan
+     * cleanly against the right zone. */
+    extern volatile int g_pendingZoneTeleport;
+    if (g_pendingZoneTeleport > 0) return;
+
     /* Quick check: is there even a waypoint quest for this area? */
     int diff = g_currentDifficulty;
     BOOL hasWPQuest = FALSE;

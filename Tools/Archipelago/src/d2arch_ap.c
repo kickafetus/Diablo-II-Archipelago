@@ -128,6 +128,110 @@ static void MarkApIdApplied(int apId) {
     }
 }
 
+/* 1.9.11 — per-location dedup for stackable filler items.
+ *
+ * Background: 45519 (random charm), 45520 (random set), 45521 (random unique)
+ * are stackable — if the player has 5 unique-reward locations they should
+ * receive 5 different uniques. So we deliberately do NOT mark these apIds
+ * applied (otherwise only the first would fire). But the AP server replays
+ * ALL received items on reconnect (items_handling=0b111), and the bridge's
+ * (sender_slot, location_id) dedup file can be missing / corrupt / wiped on
+ * slot detect mismatch — when that happens, EVERY filler the player ever
+ * received re-fires on next launch.
+ *
+ * Maegis pre-1.9.11 symptoms:
+ *   - Receives random charm on game launch with no check earned
+ *   - Receives 13 skills on launch with no check earned
+ *   - Gets Unique X again on relaunch after receiving it last session
+ *
+ * Defense in depth: persistent per-character set of location_ids that have
+ * already fired a filler drop. Survives across sessions, independent of
+ * bridge dedup file health.
+ *
+ * Stackability preserved: each location_id is unique within a slot, so two
+ * different unique-reward locations dedup separately. Player still receives
+ * 5 different uniques from 5 different locations. */
+#define G_APPLIED_FILLER_LOC_CAP 2048
+static int  g_appliedFillerLocs[G_APPLIED_FILLER_LOC_CAP];
+static int  g_appliedFillerLocCount = 0;
+static BOOL g_appliedFillerLocsLoaded = FALSE;
+
+static void GetAppliedFillerLocsPath(char* path, int pathSize) {
+    char dir[MAX_PATH];
+    GetCharFileDir(dir, MAX_PATH);
+    _snprintf(path, pathSize, "%sd2arch_filler_locs_%s.dat", dir, g_charName);
+    path[pathSize - 1] = 0;
+}
+
+static void LoadAppliedFillerLocs(void) {
+    if (g_appliedFillerLocsLoaded) return;
+    g_appliedFillerLocsLoaded = TRUE;
+    g_appliedFillerLocCount = 0;
+    if (!g_charName[0]) return;
+    char path[MAX_PATH];
+    GetAppliedFillerLocsPath(path, MAX_PATH);
+    FILE* f = fopen(path, "r");
+    if (!f) return;
+    char line[64];
+    while (fgets(line, sizeof(line), f) && g_appliedFillerLocCount < G_APPLIED_FILLER_LOC_CAP) {
+        int loc = 0;
+        if (sscanf(line, "loc=%d", &loc) == 1 && loc > 0) {
+            g_appliedFillerLocs[g_appliedFillerLocCount++] = loc;
+        }
+    }
+    fclose(f);
+    Log("AP FILLER LOC DEDUP: loaded %d locations from %s\n",
+        g_appliedFillerLocCount, path);
+}
+
+static BOOL IsFillerLocApplied(int locId) {
+    if (locId <= 0) return FALSE;
+    if (!g_appliedFillerLocsLoaded) LoadAppliedFillerLocs();
+    for (int i = 0; i < g_appliedFillerLocCount; i++) {
+        if (g_appliedFillerLocs[i] == locId) return TRUE;
+    }
+    return FALSE;
+}
+
+static void MarkFillerLocApplied(int locId) {
+    if (locId <= 0) return;
+    if (!g_appliedFillerLocsLoaded) LoadAppliedFillerLocs();
+    if (IsFillerLocApplied(locId)) return;
+    if (g_appliedFillerLocCount >= G_APPLIED_FILLER_LOC_CAP) {
+        /* Buffer full — drop oldest half. AP seeds rarely have >2048 filler
+         * locations, but if it ever happens we degrade to "newest 1024 only". */
+        memmove(g_appliedFillerLocs, g_appliedFillerLocs + (G_APPLIED_FILLER_LOC_CAP / 2),
+                (G_APPLIED_FILLER_LOC_CAP / 2) * sizeof(int));
+        g_appliedFillerLocCount = G_APPLIED_FILLER_LOC_CAP / 2;
+    }
+    g_appliedFillerLocs[g_appliedFillerLocCount++] = locId;
+
+    if (!g_charName[0]) return;
+    char path[MAX_PATH];
+    GetAppliedFillerLocsPath(path, MAX_PATH);
+    FILE* f = fopen(path, "a");
+    if (f) {
+        fprintf(f, "loc=%d\n", locId);
+        fflush(f);
+        fclose(f);
+    }
+}
+
+/* 1.9.11 — public wrapper for d2arch_save.c OnCharacterLoad. Forces the
+ * dedup sets to load from disk BEFORE the first PollAPUnlocks tick runs.
+ * Pre-1.9.11 the dedup sets loaded lazily inside PollAPUnlocks, opening a
+ * narrow window where items could slip through if the lazy load failed
+ * (file missing, corrupt). Eager pre-load eliminates the window. */
+void AP_PreloadDedupForCurrentChar(void) {
+    /* Force reload (drop any stale state from previous character). */
+    g_appliedApLoaded = FALSE;
+    g_appliedApCount = 0;
+    g_appliedFillerLocsLoaded = FALSE;
+    g_appliedFillerLocCount = 0;
+    LoadAppliedApIds();
+    LoadAppliedFillerLocs();
+}
+
 /* 1.9.5 Bug C1 fix — kill any orphan ap_bridge.exe processes left
  * behind by a previous game session that didn't get to run DLL
  * DLL_PROCESS_DETACH (Alt-F4, task-kill, crash). Without this, the
@@ -492,6 +596,20 @@ static void CheckSlotChangeOnConnect(void) {
     g_appliedApCount = 0;
     g_appliedApLoaded = FALSE;
 
+    /* 1.9.11 — also wipe the per-location filler dedup added in 1.9.11
+     * (B22-B24 fix). Otherwise a slot change would leave old slot's
+     * location_ids in the dedup, suppressing legitimately-different
+     * filler drops on the new slot if their loc_ids happen to overlap. */
+    {
+        char fillerLocPath[MAX_PATH];
+        GetAppliedFillerLocsPath(fillerLocPath, MAX_PATH);
+        if (DeleteFileA(fillerLocPath)) {
+            Log("AP SLOT-CHANGE: deleted %s\n", fillerLocPath);
+        }
+        g_appliedFillerLocCount  = 0;
+        g_appliedFillerLocsLoaded = FALSE;
+    }
+
     /* Wipe bridge dedup file + spoiler + checklist (all per-char in Save/) */
     char dir[MAX_PATH];
     GetCharFileDir(dir, MAX_PATH);
@@ -515,6 +633,25 @@ static void CheckSlotChangeOnConnect(void) {
               dir, g_charName);
     checklistPath[MAX_PATH - 1] = 0;
     DeleteFileA(checklistPath);
+
+    /* 1.9.11 (B4 fix) — NOTE on state + checks files (NOT wiped here):
+     *
+     * Alphena's 1.9.5 report ("Cannot connect to previous AP game") and
+     * the post-1.9.10 audit flagged that slot-change wipes 4 files but
+     * keeps d2arch_state_<char>.dat and d2arch_checks_<char>.dat. The
+     * deliberate decision is to PRESERVE these — they carry the
+     * character's quest progress + per-check counters, which the player
+     * does NOT want to lose just because they switched AP servers.
+     *
+     * The skill-pool inside state is regenerated by InitSkillPool on
+     * next char load using the new slot's seed/settings — so the OLD
+     * slot's pool entries silently get replaced. Any AP items in flight
+     * that don't match the new pool defer gracefully thanks to the B2
+     * skill-apId dedup fix (no longer permanently eaten).
+     *
+     * If a future need arises to fully reset a character (e.g. user
+     * intentionally re-rolls), expose that as a separate explicit
+     * "Reset character" button rather than auto-wiping on slot change. */
 
     /* Update stored hash so we don't trigger again this session */
     g_apStoredServerSlotHash = curHash;
@@ -1302,6 +1439,50 @@ static void LoadAPItemLocations(void) {
 
 /* Poll AP bridge status file (Bridge → DLL) */
 static DWORD g_lastAPStatusPoll = 0;
+static void PollAPStatus(void);
+
+/* 1.9.11 — public wrapper used by d2arch_save.c OnCharacterLoad to close
+ * the AP-connect race window (B7 / Maegis "click AP Connect then SP too
+ * fast" / Dank_Santa "silent AP lost connection").
+ *
+ * Pre-1.9.11 behavior: if the user clicked AP Connect, then clicked
+ * Single Player before the bridge had authenticated (typical window
+ * 200ms - 2000ms), OnCharacterLoad ran with g_apConnected=FALSE and
+ * loaded the character in offline mode. Settings froze offline; the
+ * character could not later "switch on" AP without exit-and-reload.
+ *
+ * Fix: if the user has clicked AP Connect (g_apPolling=TRUE) but
+ * g_apConnected is still FALSE at character-load time, wait up to
+ * maxMs milliseconds polling the AP status file. Each iteration resets
+ * the 2-second throttle on PollAPStatus and sleeps briefly. Returns
+ * TRUE if g_apConnected became true within the timeout; FALSE otherwise.
+ *
+ * Loading the character with !g_apConnected after this returns FALSE is
+ * the explicit user-or-bridge-failure case — the caller can show a
+ * banner / log a warning so the user understands they ended up offline. */
+BOOL AP_WaitForConnectIfPending(int maxMs) {
+    if (g_apConnected) return TRUE;
+    if (!g_apPolling)  return FALSE;   /* User didn't click AP Connect */
+
+    DWORD start = GetTickCount();
+    int polls = 0;
+    while ((GetTickCount() - start) < (DWORD)maxMs) {
+        g_lastAPStatusPoll = 0;        /* bypass the 2s throttle */
+        PollAPStatus();
+        polls++;
+        if (g_apConnected) {
+            Log("AP_WaitForConnectIfPending: connected after %d polls / %lums\n",
+                polls, GetTickCount() - start);
+            return TRUE;
+        }
+        Sleep(150);
+    }
+    Log("AP_WaitForConnectIfPending: gave up after %d polls / %lums "
+        "(g_apPolling=%d g_apConnected=%d)\n",
+        polls, GetTickCount() - start, (int)g_apPolling, (int)g_apConnected);
+    return FALSE;
+}
+
 static void PollAPStatus(void) {
     DWORD now = GetTickCount();
     if (now - g_lastAPStatusPoll < 2000) return;
@@ -1720,43 +1901,68 @@ static void PollAPUnlocks(void) {
             /* Handle skill items (45001-45499) */
             if (apId >= 45001 && apId < 45500) {
                 int skillId = apId - 45000;
+                BOOL foundInPool = FALSE;       /* 1.9.11 — B2 fix */
                 for (int i = 0; i < g_poolCount; i++) {
-                    if (g_skillDB[g_pool[i].dbIndex].id == skillId && !g_pool[i].unlocked) {
-                        g_pool[i].unlocked = TRUE;
-                        /* 1.7.1 FIX: rebuild the skill tree on next tick so the
-                         * unlock is visible without reloading the character. */
-                        g_slotsDirty = TRUE;
-                        g_slotsApplied = FALSE;
-                        char msg[160];
-                        /* 1.8.4: include sender slot in banner if another
-                         * player found this skill for us. Self-finds and
-                         * unknown-sender keep the original banner. */
-                        if (unlockSender[0] != 0 && g_apSlot[0] != 0
-                            && _stricmp(unlockSender, g_apSlot) != 0) {
-                            _snprintf(msg, sizeof(msg) - 1, "AP: %s unlocked! (from %s)",
-                                      g_skillDB[g_pool[i].dbIndex].name, unlockSender);
-                            msg[sizeof(msg) - 1] = 0;
-                        } else {
-                            sprintf(msg, "AP: %s unlocked!", g_skillDB[g_pool[i].dbIndex].name);
-                        }
-                        ShowNotify(msg);
-                        Log("AP UNLOCK: %s (skill %d, AP item %d) from='%s' — tree rebuild queued\n",
-                            g_skillDB[g_pool[i].dbIndex].name, skillId, apId,
-                            unlockSender[0] ? unlockSender : "(self/unknown)");
-                        MarkApIdApplied(apId);
-                        unlockCount++;
-                        /* 1.8.0 — Item Log: AP skill unlock (inbound) */
-                        {
-                            char skillNameBuf[64];
-                            sprintf(skillNameBuf, "%s unlock", g_skillDB[g_pool[i].dbIndex].name);
-                            ItemLogAddA(0, 2, skillNameBuf, "AP server");
+                    if (g_skillDB[g_pool[i].dbIndex].id == skillId) {
+                        foundInPool = TRUE;
+                        if (!g_pool[i].unlocked) {
+                            g_pool[i].unlocked = TRUE;
+                            /* 1.7.1 FIX: rebuild the skill tree on next tick so the
+                             * unlock is visible without reloading the character. */
+                            g_slotsDirty = TRUE;
+                            g_slotsApplied = FALSE;
+                            char msg[160];
+                            /* 1.8.4: include sender slot in banner if another
+                             * player found this skill for us. Self-finds and
+                             * unknown-sender keep the original banner. */
+                            if (unlockSender[0] != 0 && g_apSlot[0] != 0
+                                && _stricmp(unlockSender, g_apSlot) != 0) {
+                                _snprintf(msg, sizeof(msg) - 1, "AP: %s unlocked! (from %s)",
+                                          g_skillDB[g_pool[i].dbIndex].name, unlockSender);
+                                msg[sizeof(msg) - 1] = 0;
+                            } else {
+                                sprintf(msg, "AP: %s unlocked!", g_skillDB[g_pool[i].dbIndex].name);
+                            }
+                            ShowNotify(msg);
+                            Log("AP UNLOCK: %s (skill %d, AP item %d) from='%s' — tree rebuild queued\n",
+                                g_skillDB[g_pool[i].dbIndex].name, skillId, apId,
+                                unlockSender[0] ? unlockSender : "(self/unknown)");
+                            unlockCount++;
+                            /* 1.8.0 — Item Log: AP skill unlock (inbound) */
+                            {
+                                char skillNameBuf[64];
+                                sprintf(skillNameBuf, "%s unlock", g_skillDB[g_pool[i].dbIndex].name);
+                                ItemLogAddA(0, 2, skillNameBuf, "AP server");
+                            }
                         }
                         break;
                     }
                 }
-                /* Already-unlocked skill: still mark applied so we never
-                 * accidentally double-count it if the pool state drifts. */
-                if (!IsApIdApplied(apId)) MarkApIdApplied(apId);
+                /* 1.9.11 — B2 fix: only mark applied when we actually FOUND
+                 * the skill in this slot's pool (either freshly unlocked or
+                 * already unlocked is fine — both mean "I have a slot for
+                 * this skill so dedup is safe").
+                 *
+                 * Pre-1.9.11 unconditionally marked applied after the loop,
+                 * which permanently ATE skills whose ID didn't match any
+                 * pool entry (e.g., received from a multiworld peer for a
+                 * different class, pool refresh dropped the slot, or
+                 * NATIVE_ONLY_SKILL_IDS mismatch). The skill was lost
+                 * forever — bridge dedup thought we consumed it, server
+                 * would never resend.
+                 *
+                 * Now: not-found skills stay in pending state. If the pool
+                 * later grows to include the skill (rare but possible via
+                 * settings change or AP option toggle), the next poll
+                 * tick re-evaluates and unlocks correctly. Bridge dedup
+                 * still prevents spam (each location_id only emits once
+                 * per session). */
+                if (foundInPool) {
+                    if (!IsApIdApplied(apId)) MarkApIdApplied(apId);
+                } else {
+                    Log("AP SKILL DEFER: apId=%d (skill %d) not in this slot's pool — "
+                        "leaving un-dedup'd in case pool changes later\n", apId, skillId);
+                }
             }
 
             /* Handle filler items (45500-45999) — use server-side delivery */
@@ -1902,24 +2108,46 @@ static void PollAPUnlocks(void) {
                          * magic charm gave 2, first unique gave 2".
                          * The bridge can re-send the same filler ID during
                          * connect/reconnect, and both arrivals would queue
-                         * a separate drop. We now suppress duplicate
-                         * receives of the same filler ID within a 5-second
-                         * window. Genuine multiple receives (player gets
-                         * 2 charms in quick succession via separate
-                         * checks) still work because each receive carries
-                         * a unique location_id at the bridge layer; only
-                         * the in-flight DLL receive is deduped. */
+                         * a separate drop. We suppress duplicate receives
+                         * of the same filler ID within a 5-second window.
+                         *
+                         * 1.9.11 ADDITION — across-session location dedup.
+                         * Pre-1.9.11 the 5-second window only caught
+                         * intra-session bridge duplicates. On game restart,
+                         * the bridge would replay every received item and
+                         * each one re-fired (Maegis: charm + 13 skills + a
+                         * unique+set on relaunch with no check earned).
+                         * Now we ALSO dedup by location_id, persisted to
+                         * d2arch_filler_locs_<char>.dat. Each unique check
+                         * location gets exactly one drop, ever. Stackability
+                         * across DIFFERENT locations is preserved because
+                         * each location_id is unique within a slot. Legacy
+                         * unlock lines without location info (parsed<3 at
+                         * line 1597) fall back to the 5s window only. */
                         static struct { int apId; DWORD when; } s_recentFillers[8] = {0};
                         DWORD nowMs = GetTickCount();
                         BOOL isDuplicate = FALSE;
-                        for (int i = 0; i < 8; i++) {
-                            if (s_recentFillers[i].apId == apId &&
-                                nowMs - s_recentFillers[i].when < 5000) {
-                                isDuplicate = TRUE;
-                                Log("AP FILLER DEDUP: suppressing duplicate apId=%d within 5s window\n", apId);
-                                break;
+
+                        /* Persistent across-session dedup first (only when
+                         * location info is present). */
+                        if (unlockLoc > 0 && IsFillerLocApplied(unlockLoc)) {
+                            Log("AP FILLER LOC DEDUP: location %d already delivered "
+                                "(apId=%d) — suppressing replay\n", unlockLoc, apId);
+                            isDuplicate = TRUE;
+                        }
+
+                        /* Intra-session 5-second window (legacy / no-loc case). */
+                        if (!isDuplicate) {
+                            for (int i = 0; i < 8; i++) {
+                                if (s_recentFillers[i].apId == apId &&
+                                    nowMs - s_recentFillers[i].when < 5000) {
+                                    isDuplicate = TRUE;
+                                    Log("AP FILLER DEDUP: suppressing duplicate apId=%d within 5s window\n", apId);
+                                    break;
+                                }
                             }
                         }
+
                         if (!isDuplicate) {
                             /* Find oldest slot to overwrite */
                             int oldest = 0;
@@ -1947,6 +2175,14 @@ static void PollAPUnlocks(void) {
                                     Quests_QueueSpecificDrop(REWARD_DROP_UNIQUE, idx, "AP server");
                                     break;
                                 }
+                            }
+
+                            /* 1.9.11 — persist the location so this exact
+                             * check is never re-delivered, even if the
+                             * bridge's own dedup file is lost / corrupt /
+                             * wiped by a slot detect mismatch. */
+                            if (unlockLoc > 0) {
+                                MarkFillerLocApplied(unlockLoc);
                             }
                         }
                         break;

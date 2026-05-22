@@ -353,6 +353,21 @@ static int __fastcall OperateHandlerHook(void* pGame, void* pPlayer,
     BOOL doLog = (s_logCount < 8);
     if (doLog) s_logCount++;
 
+    /* 1.9.11 — capture pre-trampoline state for B17 chest cheat fix.
+     *
+     * LXXIX bug: spamming a locked chest with no key still progressed chest
+     * checks. Root cause: classification fires BEFORE the trampoline, so the
+     * bonus check fires regardless of whether D2 actually opened the chest.
+     *
+     * Fix: record the object's pre-trampoline mode (offset 0x10). After the
+     * trampoline, re-check mode. For loot-container operateFns we only fire
+     * the bonus check if mode advanced (closed -> operating/opened). Other
+     * operate types (doors, shrines, quest objects) keep the pre-trampoline
+     * classification to avoid changing their behavior. */
+    void* pObjectForPost = NULL;
+    BYTE  preOperateFn   = 0;
+    DWORD preMode        = 0;
+
     __try {
         if (doLog) {
             Log("OPERATE_HOOK: fired pGame=%08X pPlayer=%08X nObjType=%d nGUID=%d "
@@ -364,6 +379,8 @@ static int __fastcall OperateHandlerHook(void* pGame, void* pPlayer,
             void* pObject = s_fnGetServerUnit(pGame, nObjectType, nObjectGUID);
             if (doLog) Log("OPERATE_HOOK:  pObject=%08X\n", (DWORD)pObject);
             if (pObject) {
+                pObjectForPost = pObject;
+                preMode = *(DWORD*)((BYTE*)pObject + 0x10);
                 /* Two-level deref: pUnit+0x14 = pObjectData (small struct),
                  * pObjectData+0x00 = pObjectsTxt (the actual txt record). */
                 void* pObjectData = *(void**)((BYTE*)pObject + 0x14);
@@ -374,6 +391,7 @@ static int __fastcall OperateHandlerHook(void* pGame, void* pPlayer,
                                (DWORD)pObjectData, (DWORD)pObjectsTxt);
                 if (pObjectsTxt) {
                     BYTE operateFn = *((BYTE*)pObjectsTxt + 0x1B3);
+                    preOperateFn = operateFn;
                     if (doLog) Log("OPERATE_HOOK:  operateFn=%d\n", (int)operateFn);
                     /* Full dispatch map from D2MOO ObjMode.cpp:79-156.
                      * Indices that aren't classified here are silently
@@ -413,7 +431,14 @@ static int __fastcall OperateHandlerHook(void* pGame, void* pPlayer,
                          * Cases 2 (Shrine), 17 (Obelisk), 24 (TaintedSunAltar)
                          * are claimed by other handlers below — hidden
                          * stash actually uses operateFn 1 (Casket) which
-                         * is already in this list, so it's already counted. */
+                         * is already in this list, so it's already counted.
+                         *
+                         * 1.9.11 — DEFERRED to post-trampoline. LXXIX bug:
+                         * spamming a locked chest with no key still progressed
+                         * chest checks. We now fire the counter + bonus check
+                         * ONLY if the chest actually opened (mode transition
+                         * 0 -> >=1 after the trampoline). See the post-call
+                         * block below the trampoline invocation. */
                         case 1:  /* Casket — also covers HiddenStash, dead rogue corpses */
                         case 4:  /* Chest */
                         case 19: /* ArmorStand (drops armor) */
@@ -426,9 +451,7 @@ static int __fastcall OperateHandlerHook(void* pGame, void* pPlayer,
                         case 58: /* KhalimChest 2 */
                         case 59: /* KhalimChest 3 */
                         case 60: /* TristramCoffin loot variant */
-                            g_charStats.chestsOpened++;
-                            /* 1.9.0 — fire bonus AP check via escalating chance */
-                            Bonus_OnChestOpened(g_currentDifficulty);
+                            /* Intentionally NO-OP here — handled post-trampoline. */
                             break;
 
                         /* ----- Breakables ----- */
@@ -508,9 +531,45 @@ static int __fastcall OperateHandlerHook(void* pGame, void* pPlayer,
         if (doLog) Log("OPERATE_HOOK:  EXCEPTION in classification path\n");
     }
 
-    return ((OperateHandlerFn_t)s_operateDetour.trampoline)(pGame, pPlayer,
-                                                            nObjectType, nObjectGUID,
-                                                            pResult);
+    int rc = ((OperateHandlerFn_t)s_operateDetour.trampoline)(pGame, pPlayer,
+                                                              nObjectType, nObjectGUID,
+                                                              pResult);
+
+    /* 1.9.11 — POST-trampoline classification for loot containers.
+     *
+     * We only fire the chest counter + bonus check if the object's mode
+     * advanced (0 closed -> >=1 operating/opened). For a locked chest
+     * without a key, D2's operate handler plays the "no key" sound but
+     * does NOT advance the mode, so we correctly skip the bonus.
+     *
+     * Defensive: if pre-fetch failed (pObjectForPost==NULL), do nothing —
+     * we'd rather under-count chests than over-count via the cheat. */
+    if (pObjectForPost && preOperateFn != 0) {
+        __try {
+            DWORD postMode = *(DWORD*)((BYTE*)pObjectForPost + 0x10);
+            BOOL  isLootContainer = FALSE;
+            switch (preOperateFn) {
+                case 1: case 4: case 19: case 20: case 26: case 30:
+                case 36: case 51: case 57: case 58: case 59: case 60:
+                    isLootContainer = TRUE;
+                    break;
+                default: break;
+            }
+            if (isLootContainer && postMode > preMode) {
+                /* Mode advanced — chest opened. Safe to fire. */
+                g_charStats.chestsOpened++;
+                Bonus_OnChestOpened(g_currentDifficulty);
+            } else if (isLootContainer && doLog) {
+                Log("OPERATE_HOOK: chest open SUPPRESSED (operateFn=%d preMode=%lu "
+                    "postMode=%lu rc=%d) — locked w/o key or failed attempt\n",
+                    (int)preOperateFn, preMode, postMode, rc);
+            }
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            if (doLog) Log("OPERATE_HOOK: EXCEPTION in post-trampoline classify\n");
+        }
+    }
+
+    return rc;
 }
 
 /* ----------------------------------------------------------------

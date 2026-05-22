@@ -315,9 +315,25 @@ static void PatchAllSkillAnimations(void) {
  * wins — the global skill table can only carry one anim per skill. AP play is solo by
  * design so this is acceptable. */
 static void RestoreNativeAnimsForClass(int playerClass) {
+    /* 1.9.11 — fix race condition: pre-1.9.11 this function early-returned when
+     * g_animPatchApplied was FALSE, which happened when the player loaded a character
+     * BEFORE PeriodicApply had run PatchAllSkillAnimations even once. The per-class
+     * restore then never re-ran, leaving the entire skill table stuck in the
+     * "safe-for-any-class" A1 state — Smite, Whirlwind, Jump Attack, Double Swing /
+     * Throw, Bladefury, Dragon Claw, Amazon javelins, Druid Rabies / Hunger all
+     * stayed in A1 even for their native class.
+     *
+     * Fix: drive the boot patch synchronously here if it has not run yet. The boot
+     * patch is idempotent (line 192 self-guards) and only writes the cache + applies
+     * the cross-class fallback — never writes anything that conflicts with what this
+     * function then immediately overwrites for the player's native class. */
     if (!g_animPatchApplied || !g_animCacheReady) {
-        Log("ANIM REPATCH skipped: boot patch not applied yet (class=%d)\n", playerClass);
-        return;
+        Log("ANIM REPATCH: boot patch not yet run — driving it synchronously now (class=%d)\n", playerClass);
+        PatchAllSkillAnimations();
+        if (!g_animPatchApplied || !g_animCacheReady) {
+            Log("ANIM REPATCH: PatchAllSkillAnimations could not complete (sgptDT not ready?); skipping for class=%d\n", playerClass);
+            return;
+        }
     }
     if (playerClass < 0 || playerClass > 6) {
         Log("ANIM REPATCH skipped: invalid class %d\n", playerClass);

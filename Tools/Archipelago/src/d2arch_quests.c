@@ -120,11 +120,20 @@ static volatile int g_cheatSpawnMonsterRowId   = -1;
  * TC name in sgptDataTables->pTreasureClassExTxt. If the name lookup fails
  * (e.g. heavily modded TC file or offsets moved), we keep the hardcoded
  * fallback values below which are correct for vanilla LoD 1.10f. */
-#define BOSS_TC_ANDARIEL  667
-#define BOSS_TC_DURIEL    826
-#define BOSS_TC_MEPHISTO  685
-#define BOSS_TC_DIABLO    691
-#define BOSS_TC_BAAL      718
+/* 1.9.11: corrected fallback values. Source: TreasureClassEx.txt (1.10f) row numbers
+ * (data rows are 0-indexed starting at file line 2, so "TC ID = file line - 2"):
+ *   Andariel = line 671 -> TC 669    (was 667, off by 2)
+ *   Duriel   = line 677 -> TC 675    (was 826, completely wrong - probably copy-paste)
+ *   Mephisto = line 689 -> TC 687    (was 685, off by 2)
+ *   Diablo   = line 695 -> TC 693    (was 691, off by 2)
+ *   Baal     = line 722 -> TC 720    (was 718, off by 2)
+ * In practice these rarely fire because ResolveBossLootTCs() resolves by name at boot,
+ * but they are correct now if the runtime probe ever fails. */
+#define BOSS_TC_ANDARIEL  669
+#define BOSS_TC_DURIEL    675
+#define BOSS_TC_MEPHISTO  687
+#define BOSS_TC_DIABLO    693
+#define BOSS_TC_BAAL      720
 static int g_bossLootTCs[] = { BOSS_TC_ANDARIEL, BOSS_TC_DURIEL, BOSS_TC_MEPHISTO, BOSS_TC_DIABLO, BOSS_TC_BAAL };
 static const char* g_bossLootNames[] = { "Andariel", "Duriel", "Mephisto", "Diablo", "Baal" };
 #define BOSS_LOOT_COUNT 5

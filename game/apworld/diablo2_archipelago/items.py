@@ -292,6 +292,40 @@ CLASS_SKILLS = {
     "assassin":    ASSASSIN_SKILLS,
 }
 
+# 1.9.11 — NATIVE-ONLY skill IDs (mirror of d2arch_skills.c:300-311).
+#
+# These skills are tied to class-specific animations (Amazon javelins use TH,
+# Paladin Smite uses S1 shield-bash, Barbarian sequences use SQ, Druid bites
+# use S3, Assassin kicks/claws use KK). When a non-native class receives one,
+# the DLL's `IsNativeOnlySkill` filter excludes it from the local pool and
+# the skill never appears in the player's right-click list.
+#
+# Pre-1.9.11 the apworld didn't know about this and would happily place these
+# skill items into a slot for any class. The DLL then deferred (B2 fix) or
+# permanently ate (pre-B2) the apId. Now the apworld filters them out when
+# the player's class (via `skill_class_filter` toggles) is not the native
+# owner — saving multiworld bandwidth and avoiding deferred-skill spam.
+#
+# Keep this list in sync with d2arch_skills.c. The DLL is the runtime
+# source of truth; the apworld filter is a build-time optimisation.
+NATIVE_ONLY_SKILL_IDS = {
+    15, 20, 25, 35,            # Amazon — pure throwing javelins
+    97,                         # Paladin — shield-bash (Smite)
+    133, 140, 143, 151,         # Barbarian — sequence skills
+    238, 242,                   # Druid — werewolf-form bites
+    255, 259, 260, 266, 269, 274,  # Assassin — kicks/claws/blade-fury/charge-up
+}
+
+# Which class each NATIVE_ONLY skill belongs to (for include-class filtering).
+NATIVE_ONLY_SKILL_CLASS = {
+    15: "amazon", 20: "amazon", 25: "amazon", 35: "amazon",
+    97: "paladin",
+    133: "barbarian", 140: "barbarian", 143: "barbarian", 151: "barbarian",
+    238: "druid", 242: "druid",
+    255: "assassin", 259: "assassin", 260: "assassin",
+    266: "assassin", 269: "assassin", 274: "assassin",
+}
+
 # All skill items combined (without trap skills — those are opt-in)
 ALL_SKILL_ITEMS = (
     AMAZON_SKILLS + SORCERESS_SKILLS + NECROMANCER_SKILLS +

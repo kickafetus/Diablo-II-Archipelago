@@ -285,12 +285,29 @@ static LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         /* Skill tree is now handled by vanilla's panel system via JMP hook.
-         * No separate T key toggle needed — vanilla's hotkey opens the panel. */
+         * No separate T key toggle needed — vanilla's hotkey opens the panel.
+         *
+         * 1.9.11 (B13 fix) — Alphena reported ESC closing a vanilla D2 panel
+         * (stash) but leaving OUR custom panel stuck open (or vice versa).
+         * Pre-1.9.11 we returned 0 after closing OUR panel, which prevented
+         * D2 from seeing ESC — its panel stayed open.
+         *
+         * New behavior: close all OUR open panels in one ESC press AND fall
+         * through (no `return 0`) so D2 also gets ESC and closes any vanilla
+         * panels in the same gesture. The cost: ESC now nukes everything in
+         * sight instead of the visually-topmost panel only. That's the
+         * lesser evil — players were getting locked into half-open states
+         * and having to alt-tab out and back to recover. */
         if (wp == VK_ESCAPE) {
-            if (g_zoneTrackerOpen) { g_zoneTrackerOpen = FALSE; return 0; }
-            if (g_questLogOpen) { g_questLogOpen = FALSE; return 0; }
-            if (g_editorOpen) { g_editorOpen = FALSE; g_apPageFocus = -1; return 0; }
-            if (g_menuOpen) { g_menuOpen = FALSE; return 0; }
+            BOOL closedAny = FALSE;
+            if (g_zoneTrackerOpen) { g_zoneTrackerOpen = FALSE; closedAny = TRUE; }
+            if (g_questLogOpen)    { g_questLogOpen    = FALSE; closedAny = TRUE; }
+            if (g_editorOpen)      { g_editorOpen      = FALSE; g_apPageFocus = -1; closedAny = TRUE; }
+            if (g_menuOpen)        { g_menuOpen        = FALSE; closedAny = TRUE; }
+            /* Intentionally do NOT return 0 even when closedAny — let D2 see
+             * the ESC too so any vanilla panel currently open (stash, char
+             * sheet, vanilla skill tree, inventory) also closes. */
+            (void)closedAny;
         }
 
     }

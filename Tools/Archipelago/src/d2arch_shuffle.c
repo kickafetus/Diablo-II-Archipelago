@@ -312,6 +312,30 @@ static void ApplyMonsterShuffle(DWORD seed) {
         BYTE* origRec = (BYTE*)(pMonArr + origIdx * MON_RECORD_SIZE);
         BYTE* replRec = (BYTE*)(pMonArr + replIdx * MON_RECORD_SIZE);
 
+        /* 1.9.11 (B14 fix) — defensive nameStr validation.
+         *
+         * Maegis: "champion enemies no names" — symptom was champion units
+         * rendering with the prefix only (e.g. "the Bold" instead of
+         * "Goron the Bold"). Root cause hypothesis: some replacement
+         * monsters in the preset pool have a nameStr=0 (placeholder
+         * MonStats row) or an index that points to an empty TBL string.
+         * When that record overwrites a valid monster, the swapped slot
+         * is left nameless and champion-spawn lookups break.
+         *
+         * Defense: skip the swap if the replacement's nameStr is 0 or
+         * the orig's nameStr is 0 (don't overwrite a no-name source
+         * either; that means we never had a name to start with and
+         * shouldn't propagate it). */
+        WORD replNameStr = *(WORD*)(replRec + MON_NAMESTR);
+        WORD origNameStr = *(WORD*)(origRec + MON_NAMESTR);
+        if (replNameStr == 0 || origNameStr == 0) {
+            Log("MONSTER SHUFFLE: skipping swap orig=%d (nameStr=%u) <- repl=%d "
+                "(nameStr=%u) due to empty nameStr (champion name corruption defense)\n",
+                origIdx, origNameStr, replIdx, replNameStr);
+            swapsSkippedByBan++;
+            continue;
+        }
+
         /* Save original monster's stats before overwrite */
         WORD origLevel[3]; memcpy(origLevel, origRec + MON_LEVEL, 6);
         WORD origMinHP[3]; memcpy(origMinHP, origRec + MON_MINHP, 6);
@@ -440,7 +464,24 @@ static void ApplyBossShuffle(DWORD seed) {
         *(WORD*)(dstRec + MON_SOUND) = src->sound;
         *(WORD*)(dstRec + MON_USOUND) = src->usound;
         *(WORD*)(dstRec + MON_STATSEX) = src->statsEx;
-        *(WORD*)(dstRec + MON_AI) = src->ai;
+        /* 1.9.11 (B6 fix) — DO NOT swap MON_AI.
+         *
+         * People / Maegis 1.9.10 reports: "Boss Shuffler may put a cinematic
+         * or invincible/invisible version of a boss". Root cause: each act
+         * boss has bespoke AI (Andariel=1, Duriel=2, Mephisto=3, Diablo=4,
+         * Baal=5) wired to spawn-location, hitbox, death-cinematic-trigger,
+         * and quest-progress hooks specific to that boss's spawn point.
+         * When the AI runs in the wrong slot, the boss may walk to a
+         * non-existent spawn marker (appears invisible), trigger the wrong
+         * death cinematic (Mephisto sprite playing on Andariel's corpse),
+         * or be marked invincible by a missing AI hook.
+         *
+         * Keep the SAME AI for each boss slot — only swap cosmetic
+         * (code/name/sound/sprite) + drop tables (skills/statsEx). The
+         * player still sees visual variety ("Andariel" looks like Mephisto)
+         * but the AI logic stays correct and the death cinematic plays the
+         * right ending. */
+        /* *(WORD*)(dstRec + MON_AI) = src->ai; */  /* REMOVED 1.9.11 */
         memcpy(dstRec + MON_SKILLS, src->skills, 16);
         memcpy(dstRec + MON_SKMODE, src->skmode, 8);
         /* Scale skill levels to target boss level */

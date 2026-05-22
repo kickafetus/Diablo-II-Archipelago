@@ -393,7 +393,12 @@ class D2ArchipelagoBridge:
         if not os.path.exists(state):
             found = self._find_file("d2arch_state_")
             if found:
-                self.log(f"Found state file: {os.path.basename(found)}")
+                # 1.9.11: only log this once per state file to stop spamming the log.
+                # Each load_skills() call would otherwise emit a fresh line, flooding
+                # the bridge log to MBs for users with multiple characters.
+                if getattr(self, "_announced_state_file", None) != found:
+                    self.log(f"Found state file: {os.path.basename(found)}")
+                    self._announced_state_file = found
                 self.state_file = found
                 state = found
             else:

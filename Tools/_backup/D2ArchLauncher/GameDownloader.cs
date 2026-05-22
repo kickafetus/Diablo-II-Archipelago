@@ -35,6 +35,24 @@ public class GameDownloader
 		"d2char.mpq", "d2data.mpq", "d2sfx.mpq"
 	};
 
+	// 1.9.11 (B15 fix) — files the user is expected to edit (video / input /
+	// hackmap settings). VerifyInstallationAsync skips size-check on these so
+	// "Repair Files" does NOT overwrite player-edited resolution / FPS cap /
+	// keybinds. RepairFilesAsync still WRITES them if missing entirely, but
+	// will never replace a present file regardless of size mismatch.
+	//
+	// Maegis 1.9.2 report: "Most video settings get changed back to default
+	// preventing player from playing in Fullscreen from launch." Same issue
+	// affected the Reshade / D2GL community for years before this fix.
+	private static readonly HashSet<string> USER_EDITABLE_FILES = new(StringComparer.OrdinalIgnoreCase)
+	{
+		"d2gl.ini",
+		"D2Hackmap.ini",
+		"d2sigma.ini",
+		"d2gl_userkeys.ini",
+		"keymap.ini",
+	};
+
 	public bool IsCancelled { get; set; }
 
 	public event Action<int, string>? OnProgress;
@@ -646,9 +664,16 @@ public class GameDownloader
 					FileInfo fi = new FileInfo(localPath);
 					if (fi.Exists)
 					{
+						// 1.9.11 (B15 fix) — user-editable files (d2gl.ini,
+						// D2Hackmap.ini, etc.): present-is-valid. Skip the
+						// size check so Repair doesn't clobber user settings.
+						if (USER_EDITABLE_FILES.Contains(fileName))
+						{
+							valid = true;
+						}
 						// expectedSize == 0 → manifest didn't carry size info;
 						// accept any non-empty file as valid.
-						if (expectedSize == 0 || fi.Length == expectedSize)
+						else if (expectedSize == 0 || fi.Length == expectedSize)
 						{
 							valid = true;
 						}

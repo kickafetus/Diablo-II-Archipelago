@@ -486,6 +486,19 @@ class Diablo2ArchipelagoWorld(World):
             # invisible-character bug on non-Assassin classes). Matches in-game
             # behaviour — the 'I Play Assassin' toggle was removed in 1.8.0.
 
+            # 1.9.11 (B3 fix) — drop NATIVE_ONLY skills whose owning class is
+            # not enabled. Pre-1.9.11 an Amazon javelin item could land in a
+            # pool where the player chose only Sorceress+Necromancer; the DLL
+            # would then exclude it from the local pool (NATIVE_ONLY filter)
+            # and the apId got deferred (B2 fix) or eaten (pre-B2). Now we
+            # filter at the apworld layer so the multiworld pool is honest.
+            from .items import NATIVE_ONLY_SKILL_IDS, NATIVE_ONLY_SKILL_CLASS
+            available_skills = [
+                s for s in available_skills
+                if s[0] not in NATIVE_ONLY_SKILL_IDS
+                or class_toggles.get(NATIVE_ONLY_SKILL_CLASS.get(s[0]), False)
+            ]
+
             # If nothing selected, fall back to all skills
             if not available_skills:
                 available_skills = list(ALL_SKILL_ITEMS)
@@ -493,6 +506,11 @@ class Diablo2ArchipelagoWorld(World):
             pool_size = len(available_skills)
         else:
             # All classes mode — full 210-skill pool (trap skills always excluded)
+            # 1.9.11 note: in all-classes mode we keep NATIVE_ONLY skills in
+            # the pool because we don't know the receiving character's class
+            # at generation time. The DLL filters at runtime; the B2 fix
+            # ensures any apId that doesn't match the local pool defers
+            # gracefully rather than being permanently eaten.
             available_skills = list(ALL_SKILL_ITEMS)
             pool_size = len(available_skills)
 

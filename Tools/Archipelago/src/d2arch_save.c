@@ -958,6 +958,53 @@ static unsigned int d2s_CalcChecksum(unsigned char *data, int size) {
 typedef struct { int id; int value; } D2SStat;
 #define D2S_MAX_STATS 32
 
+/* 1.9.11 — Crash-recovery fallback: read the per-button cache file for
+ * a given btnIdx (the same file the click handler in d2arch_drawall.c writes
+ * atomically on every skill point spend, 1.9.10).
+ *
+ * Filename pattern (matches d2arch_drawall.c:1236-1240):
+ *   btnIdx=0:    d2arch_fireball_<char>.dat
+ *   btnIdx=N>0:  d2arch_skill<N+1>_<char>.dat   (so btnIdx 1 -> d2arch_skill2_, etc.)
+ *
+ * Used by ResetD2SFile below as a defense against vanilla D2 1.10f's
+ * NON-atomic .d2s writes: if a crash truncated the .d2s skill section,
+ * skills30[btnIdx] may read as 0 even though the player invested points.
+ * The per-button cache is updated atomically (tmp + MoveFileExA, 250ms
+ * throttle), so it survives crashes that .d2s does not.
+ *
+ * Returns -1 if file missing / unreadable / invalid. Returns >= 0 level
+ * on success.
+ *
+ * This is the deeper fix for Congree's 1.9.10 report of losing all skill
+ * points after a Hell Ancients crash, where 1.9.10's atomic-write fix to
+ * OUR sidecars didn't help because the actual loss happened in D2's own
+ * non-atomic .d2s rewrite. */
+static int ReadPerButtonCacheLevel(const char* charName, int btnIdx) {
+    if (!charName || !charName[0]) return -1;
+    if (btnIdx < 0 || btnIdx >= 30) return -1;
+
+    char dir[MAX_PATH], path[MAX_PATH], sfx[32];
+    GetCharFileDir(dir, MAX_PATH);
+    if (btnIdx == 0) {
+        snprintf(path, sizeof(path), "%sd2arch_fireball_%s.dat", dir, charName);
+    } else {
+        snprintf(sfx, sizeof(sfx), "d2arch_skill%d_", btnIdx + 1);
+        snprintf(path, sizeof(path), "%s%s%s.dat", dir, sfx, charName);
+    }
+
+    FILE* f = fopen(path, "r");
+    if (!f) return -1;
+    char buf[16] = {0};
+    size_t r = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    if (r == 0) return -1;
+    buf[r] = 0;
+    int lvl = atoi(buf);
+    if (lvl < 0)  lvl = 0;
+    if (lvl > 99) lvl = 99;   /* sanity clamp matching .d2s read */
+    return lvl;
+}
+
 /* Reset skills in .d2s file on disk. Called when player exits to char list.
  * Zeros all 30 skill bytes, counts total, adds to NEWSKILLS pool.
  * This ensures the next load starts with clean skills and points in pool. */
@@ -1160,20 +1207,49 @@ static void ResetD2SFile(const char* charName) {
                     if (g_reinvestCount >= 30) break;             /* full */
                     if (btnIdx >= 30) continue;                   /* defensive */
 
-                    int level = (int)skills30[btnIdx];
+                    int level_d2s = (int)skills30[btnIdx];
 
                     /* Sanity-clamp: vanilla D2 levels are 0..99. Anything
                      * above 99 is corrupt data — refuse to reinvest. */
-                    if (level < 0)  level = 0;
-                    if (level > 99) level = 99;
+                    if (level_d2s < 0)  level_d2s = 0;
+                    if (level_d2s > 99) level_d2s = 99;
+
+                    /* 1.9.11 — crash recovery: cross-reference the per-button
+                     * cache file (atomic since 1.9.10) in case D2's own non-
+                     * atomic .d2s write was truncated by a crash.
+                     *
+                     * Decision rule:
+                     *   - If cache >= d2s: trust the cache (player earned at
+                     *     least that many points; crash may have lost a save).
+                     *   - If d2s > cache: trust .d2s (possible if cache was
+                     *     out of date or wasn't flushed yet).
+                     *
+                     * Net effect: the player NEVER loses a skill point that
+                     * was successfully written to EITHER source. Phantom
+                     * "extra" points from corrupted .d2s above the cache value
+                     * are still trusted to keep parity with the existing
+                     * load behavior in the non-crash case.
+                     *
+                     * Bonus: if cache and .d2s agree (clean save), behavior is
+                     * unchanged from pre-1.9.11. */
+                    int level_cache = ReadPerButtonCacheLevel(charName, btnIdx);
+                    int level = level_d2s;
+                    const char* src = ".d2s";
+                    if (level_cache > level_d2s) {
+                        level = level_cache;
+                        src = "per-button cache (CRASH RECOVERY — .d2s was lower)";
+                        Log("ResetD2SFile: btnIdx %d skill %d — .d2s=%d cache=%d "
+                            "using CACHE (crash recovery)\n",
+                            btnIdx, slotAssign[t][s], level_d2s, level_cache);
+                    }
 
                     if (level > 0) {
                         g_reinvestSkills[g_reinvestCount] = slotAssign[t][s];
                         g_reinvestPoints[g_reinvestCount] = level;
                         g_reinvestBtnIdx[g_reinvestCount] = btnIdx;
                         g_reinvestCount++;
-                        Log("ResetD2SFile: will reinvest %d pts in skill %d at btnIdx %d (from .d2s)\n",
-                            level, slotAssign[t][s], btnIdx);
+                        Log("ResetD2SFile: will reinvest %d pts in skill %d at btnIdx %d (source=%s)\n",
+                            level, slotAssign[t][s], btnIdx, src);
                     }
                 }
             }
@@ -1949,25 +2025,18 @@ static void OnCharacterLoad(void) {
     g_applyCount = 0;
     g_lastApply = 0;
 
-    /* 1.8.2 — Wipe stale per-button level-cache files for this character.
-     * These files (d2arch_fireball_<char>.dat + d2arch_skill<N>_<char>.dat)
-     * are pure display cache; the authoritative skill data lives in the
-     * .d2s skill section. Wiping them at load forces the panel to rebuild
-     * from the reinvest pipeline (which now reads .d2s) instead of trusting
-     * cache that may have been polluted by the pre-fix reinvest-consumer
-     * bug (compact ri index writing to the wrong file). */
-    if (g_charName[0]) {
-        char _bDir[MAX_PATH], _bPath[MAX_PATH];
-        GetCharFileDir(_bDir, MAX_PATH);
-        sprintf(_bPath, "%sd2arch_fireball_%s.dat", _bDir, g_charName);
-        DeleteFileA(_bPath);
-        for (int _bi = 1; _bi < 30; _bi++) {
-            sprintf(_bPath, "%sd2arch_skill%d_%s.dat", _bDir, _bi + 1, g_charName);
-            DeleteFileA(_bPath);
-        }
-        Log("ResetD2SFile: wiped stale per-button cache files for '%s' (reinvest will rewrite from .d2s)\n",
-            g_charName);
-    }
+    /* 1.9.11 — per-button cache wipe MOVED to after ResetD2SFile.
+     *
+     * Pre-1.9.11 wiped the files HERE, then ResetD2SFile ran later. That
+     * destroyed the crash-recovery path: vanilla D2's non-atomic .d2s write
+     * can truncate the skill section on a crash, leaving skills30[btnIdx]=0
+     * even though the player invested points. The per-button cache (atomic
+     * since 1.9.10) was the only surviving record — but we deleted it before
+     * ResetD2SFile could read it.
+     *
+     * The wipe now happens AFTER ResetD2SFile so it can read the caches as
+     * a fallback. See the moved block lower in this function (search for
+     * "Wipe per-button cache files (deferred to after ResetD2SFile)"). */
 
     /* 1.8.2 — Settings sourcing rule (strict per-character):
      *
@@ -1993,6 +2062,26 @@ static void OnCharacterLoad(void) {
         GetCharFileDir(_archDir2, MAX_PATH);
         sprintf(statePath, "%sd2arch_state_%s.dat", _archDir2, g_charName);
         hasExistingChar = (GetFileAttributesA(statePath) != INVALID_FILE_ATTRIBUTES);
+    }
+
+    /* 1.9.11 (B7 fix) — close the AP-connect race window.
+     *
+     * If the player clicked AP Connect (g_apPolling=TRUE) but the bridge
+     * hasn't authenticated yet (g_apConnected=FALSE), give the connection
+     * up to 5 seconds to complete before we commit to the AP-vs-offline
+     * decision below. Pre-1.9.11 a fast click (AP Connect → Single Player
+     * → Character within ~200ms) caught us with g_apConnected=FALSE and
+     * the character loaded as offline.
+     *
+     * If we still time out we log it and proceed offline — exactly the
+     * pre-1.9.11 behavior — but at least the user has had the maximum
+     * realistic chance for the bridge to authenticate before the decision
+     * is frozen. */
+    {
+        extern BOOL AP_WaitForConnectIfPending(int maxMs);
+        if (AP_WaitForConnectIfPending(5000)) {
+            Log("OnCharacterLoad: AP connect raced — recovered before settings freeze\n");
+        }
     }
 
     if (!hasExistingChar) {
@@ -2185,6 +2274,32 @@ static void OnCharacterLoad(void) {
      * reinvest returns points to the free pool instead of losing them. */
     Log("OnCharacterLoad: running ResetD2SFile (refund + queue reinvest)\n");
     ResetD2SFile(g_charName);
+
+    /* 1.9.11 — Wipe per-button cache files (deferred to after ResetD2SFile).
+     *
+     * Original 1.8.2 rationale: clear pollution from a pre-1.8.2 bug where
+     * the cache wrote wrong values via compact index instead of btnIdx. The
+     * wipe forced a clean rebuild from .d2s on next save.
+     *
+     * 1.9.11 change: ResetD2SFile now uses the cache as a CRASH RECOVERY
+     * source when .d2s skill bytes were truncated by vanilla D2's non-atomic
+     * write. We MUST read the cache BEFORE wiping. Moved here so the read
+     * happens first, then we wipe to avoid pollution carrying past this
+     * load. The reinvest pipeline (fires ~2s later) will rewrite fresh,
+     * atomic cache files matching the queued levels. */
+    if (g_charName[0]) {
+        char _bDir[MAX_PATH], _bPath[MAX_PATH];
+        GetCharFileDir(_bDir, MAX_PATH);
+        sprintf(_bPath, "%sd2arch_fireball_%s.dat", _bDir, g_charName);
+        DeleteFileA(_bPath);
+        for (int _bi = 1; _bi < 30; _bi++) {
+            sprintf(_bPath, "%sd2arch_skill%d_%s.dat", _bDir, _bi + 1, g_charName);
+            DeleteFileA(_bPath);
+        }
+        Log("OnCharacterLoad: wiped per-button cache files for '%s' "
+            "(post-ResetD2SFile; reinvest will rewrite atomically)\n",
+            g_charName);
+    }
     SaveStateFile(); /* re-save after rewards consumed */
     /* g_resetRequested flag preserved for future use if needed, but no
      * longer gates the normal refund flow. */
@@ -2463,4 +2578,27 @@ static void OnCharacterLoad(void) {
      * set immediately on load, so a re-send to AP server can recover any
      * checks lost mid-session. */
     WriteChecksFile();
+
+    /* 1.9.11 — eager pre-load of AP dedup sets so they are ready BEFORE
+     * the first PollAPUnlocks tick can fire. Pre-1.9.11 the dedup sets
+     * loaded lazily inside PollAPUnlocks; a tiny window existed where if
+     * the lazy load failed (file missing / corrupt / partial write from
+     * a previous crash) the dedup count stayed at zero and the next batch
+     * of unlocks all slipped through as "first time seen".
+     *
+     * The eager call also reloads from disk on every char load, ensuring
+     * char A's dedup state cannot bleed into char B if the per-poll
+     * character-name reset (d2arch_ap.c:1572-1577) somehow didn't run.
+     *
+     * Closes Maegis 1.9.10 reports of:
+     *   - Receiving 13 skills on game launch with no check earned
+     *   - Receiving random charm on launch with no check earned
+     *   - Getting a Unique + Set re-delivered on relaunch after already
+     *     having received them last session */
+    {
+        extern void AP_PreloadDedupForCurrentChar(void);
+        if (g_apMode) {
+            AP_PreloadDedupForCurrentChar();
+        }
+    }
 }

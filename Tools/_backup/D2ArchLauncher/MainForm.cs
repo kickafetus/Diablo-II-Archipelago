@@ -68,7 +68,7 @@ public class MainForm : Form
 
 	private const string GAME_VERSION = "Beta 1.8.6";
 
-	private const string LAUNCHER_VERSION = "1.5.3";
+	private const string LAUNCHER_VERSION = "1.5.5";
 
 	/// &lt;summary&gt;
 	/// Compare two version strings semantically.
@@ -1689,16 +1689,12 @@ public class MainForm : Form
 		{
 		case LState.NotInstalled:
 		{
-			string? value = ReadReg("D2Key");
-			string value2 = ReadReg("D2XKey");
-			if (!string.IsNullOrEmpty(value) && !string.IsNullOrEmpty(value2))
-			{
-				StartInstall();
-			}
-			else
-			{
-				ShowCDKeyDialog();
-			}
+			// 1.9.11: CD key requirement removed entirely. D2 1.10f does not validate
+			// the registry keys at launch time for offline / LAN play (which is all we
+			// support), so we can skip the dialog. If a future D2 patch reintroduces the
+			// check, write dummy values silently in WriteDummyCDKeysIfMissing().
+			WriteDummyCDKeysIfMissing();
+			StartInstall();
 			break;
 		}
 		case LState.UpToDate:
@@ -2289,6 +2285,35 @@ public class MainForm : Form
 		}
 		error = "CD key must be 16 digits (retail CD) or 26 characters (digital).";
 		return false;
+	}
+
+	/// <summary>
+	/// 1.9.11: Replaces the old CD key entry dialog. D2 1.10f does NOT validate the
+	/// registry keys for offline / LAN / single-player launch — only the Battle.net
+	/// authentication path checked them. Since this mod is offline-only (AP runs via
+	/// local bridge, not Battle.net), we can write any non-empty value silently and
+	/// the game launches fine. Avoids scaring off newcomers who don't own retail keys.
+	/// </summary>
+	private void WriteDummyCDKeysIfMissing()
+	{
+		try
+		{
+			string? d2 = ReadReg("D2Key");
+			string? d2x = ReadReg("D2XKey");
+			if (string.IsNullOrEmpty(d2))
+			{
+				WriteReg("D2Key", "D2ARCHIPELAGOOFFLINE0001");
+			}
+			if (string.IsNullOrEmpty(d2x))
+			{
+				WriteReg("D2XKey", "D2ARCHIPELAGOOFFLINE0002");
+			}
+		}
+		catch
+		{
+			// Registry write failed — non-fatal. D2 will either accept blank keys
+			// for offline play or error out clearly; either way no dialog scare.
+		}
 	}
 
 	private void ShowCDKeyDialog()
@@ -3190,25 +3215,53 @@ public class MainForm : Form
 			}
 			ZipFile.ExtractToDirectory(tempZip, tempDir);
 
-			// Persist the new installed version so subsequent launches don't
-			// re-prompt for the same update. Written BEFORE we hand off to the
-			// updater .bat because the running process owns this launcher dir.
-			try
-			{
-				if (!string.IsNullOrEmpty(remoteVersion))
-				{
-					File.WriteAllText(Path.Combine(_launcherDir, "launcher_version.dat"), remoteVersion.Trim());
-				}
-			}
-			catch
-			{
-			}
+			// 1.9.11 (B16 fix) — DO NOT write launcher_version.dat here. The
+			// .bat below now writes it only AFTER xcopy succeeds, so a failed
+			// xcopy (AV holding the .exe / disk full / permissions error)
+			// no longer leaves the launcher claiming it's updated when the
+			// binary is still the old version. Written-here pre-1.9.11 path
+			// removed.
 
 			string batPath = Path.Combine(Path.GetTempPath(), "d2arch_update.bat");
 			string value = Environment.ProcessId.ToString();
 			string launcherDir = _launcherDir;
 			string value2 = Path.Combine(_launcherDir, "Diablo II Archipelago.exe");
-			string contents = $"@echo off\necho Waiting for launcher to close...\n:wait\ntasklist /FI \"PID eq {value}\" 2>nul | find \"{value}\" >nul\nif not errorlevel 1 (\n    timeout /t 1 /nobreak >nul\n    goto wait\n)\necho Copying new launcher files...\nxcopy /Y /E \"{tempDir}\\*\" \"{launcherDir}\\\" >nul 2>&1\necho Cleaning up...\nrmdir /S /Q \"{tempDir}\" >nul 2>&1\ndel \"{tempZip}\" >nul 2>&1\necho Starting updated launcher...\nstart \"\" \"{value2}\"\ndel \"%~f0\" >nul 2>&1\nexit\n";
+			string versionDatPath = Path.Combine(_launcherDir, "launcher_version.dat");
+			string updateLogPath = Path.Combine(_launcherDir, "launcher_update.log");
+			string verToWrite = (remoteVersion ?? "").Trim();
+			// 1.9.11 — atomic-success bat:
+			//   1. Wait for launcher to exit.
+			//   2. xcopy (no >nul 2>&1; capture output to update log).
+			//   3. Check errorlevel. If 0: write version file, clean up, restart.
+			//      If non-zero: leave version file alone (so user re-prompts),
+			//      log the error, and still restart so user can retry.
+			string contents =
+				$"@echo off\r\n" +
+				$"echo D2Arch self-update started at %DATE% %TIME% > \"{updateLogPath}\"\r\n" +
+				$"echo Waiting for launcher to close (PID {value})... >> \"{updateLogPath}\"\r\n" +
+				$":wait\r\n" +
+				$"tasklist /FI \"PID eq {value}\" 2>nul | find \"{value}\" >nul\r\n" +
+				$"if not errorlevel 1 (\r\n" +
+				$"    timeout /t 1 /nobreak >nul\r\n" +
+				$"    goto wait\r\n" +
+				$")\r\n" +
+				$"echo Copying new launcher files... >> \"{updateLogPath}\"\r\n" +
+				$"xcopy /Y /E \"{tempDir}\\*\" \"{launcherDir}\\\" >> \"{updateLogPath}\" 2>>&1\r\n" +
+				$"if errorlevel 1 (\r\n" +
+				$"    echo xcopy FAILED errorlevel=%errorlevel% >> \"{updateLogPath}\"\r\n" +
+				$"    echo Leaving launcher_version.dat unchanged so update prompt persists. >> \"{updateLogPath}\"\r\n" +
+				$"    goto cleanup\r\n" +
+				$")\r\n" +
+				$"echo xcopy OK — writing launcher_version.dat = {verToWrite} >> \"{updateLogPath}\"\r\n" +
+				$"echo {verToWrite}> \"{versionDatPath}\"\r\n" +
+				$":cleanup\r\n" +
+				$"echo Cleaning up temp dir... >> \"{updateLogPath}\"\r\n" +
+				$"rmdir /S /Q \"{tempDir}\" >nul 2>&1\r\n" +
+				$"del \"{tempZip}\" >nul 2>&1\r\n" +
+				$"echo Starting updated launcher... >> \"{updateLogPath}\"\r\n" +
+				$"start \"\" \"{value2}\"\r\n" +
+				$"del \"%~f0\" >nul 2>&1\r\n" +
+				$"exit\r\n";
 			await File.WriteAllTextAsync(batPath, contents);
 			SetStatus("Restarting launcher...");
 			Process.Start(new ProcessStartInfo
