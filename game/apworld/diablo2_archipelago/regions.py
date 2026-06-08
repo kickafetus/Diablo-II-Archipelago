@@ -10,54 +10,12 @@ from BaseClasses import Region
 
 from .locations import (
     ALL_ACT_LOCATIONS, LOCATION_BASE, ACT_BOSS_QUEST_IDS,
-    QUEST_ID_TO_LEVEL,
+    QUEST_ID_TO_LEVEL, QUEST_ID_TO_MAX_ACTS,
 )
-from .items import ZONE_KEY_ITEMS
 
 if TYPE_CHECKING:
     from . import Diablo2ArchipelagoWorld
 
-
-# Zone key → which quest/area IDs belong to this zone
-# Maps zone key name → list of area IDs that this key unlocks
-# Must match g_zoneKeyDefs in d2arch.c
-ZONE_KEY_AREAS = {
-    "Cold Plains Key":        [3, 9, 13],
-    "Burial Grounds Key":     [17, 18, 19],
-    "Stony Field Key":        [4, 10, 14],
-    "Dark Wood Key":          [5],
-    "Black Marsh Key":        [6, 11, 15, 20, 21, 22, 23, 24, 25],
-    "Tristram Key":           [38],
-    "Monastery Key":          [7, 12, 16, 26, 27, 28],
-    "Jail & Cathedral Key":   [29, 30, 31, 32, 33],
-    "Catacombs Key":          [34, 35, 36],
-    "Andariel's Lair Key":    [37],
-    "Rocky Waste Key":        [41, 47, 48, 49, 55, 59],
-    "Dry Hills Key":          [42, 56, 57, 60],
-    "Far Oasis Key":          [43, 62, 63, 64],
-    "Lost City Key":          [44, 45, 58, 61, 65],
-    "Palace Key":             [50, 51, 52, 53, 54],
-    "Arcane Sanctuary Key":   [74],
-    "Canyon of the Magi Key": [46, 66, 67, 68, 69, 70, 71, 72],
-    "Duriel's Lair Key":      [73],
-    "Spider Forest Key":      [76, 84, 85],
-    "Jungle Key":             [77, 78, 86, 87, 88, 89, 90, 91],
-    "Kurast Key":             [79, 80, 92, 93, 94, 95],
-    "Upper Kurast Key":       [81, 82, 96, 97, 98, 99],
-    "Travincal Key":          [83],
-    "Durance of Hate Key":    [100, 101, 102],
-    "Outer Steppes Key":      [104, 105],
-    "City of the Damned Key": [106],
-    "River of Flame Key":     [107],
-    "Chaos Sanctuary Key":    [108],
-    "Bloody Foothills Key":   [110],
-    "Highlands Key":          [111, 112],
-    "Caverns Key":            [113, 114, 115, 116, 117],
-    "Summit Key":             [118, 119, 120],
-    "Nihlathak Key":          [121, 122, 123, 124],
-    "Worldstone Keep Key":    [128, 129, 130],
-    "Throne of Destruction Key": [131, 132],
-}
 
 # Starting areas (always open, no key needed) — area IDs
 STARTING_AREAS = [1, 2, 8, 40, 75, 103, 109]  # Towns + Blood Moor + Den of Evil
@@ -210,9 +168,8 @@ def _build_quest_area_map() -> None:
     QUEST_ID_TO_AREA.update(act5)
 
     # --- Level milestones ---
-    # Level-up can happen in any area. Mark as "freely accessible" via
-    # starting area 1 (Rogue Camp). _get_zone_for_quest short-circuits
-    # on quest_type == "level", so this entry is informational only.
+    # Level-up can happen in any area. Entries here are informational only;
+    # quest_type == "level" is handled separately in create_regions.
     for qid in (78, 79, 81, 82, 83, 180, 181, 182, 183, 184,
                 282, 283, 284, 285):
         QUEST_ID_TO_AREA.setdefault(qid, 1)
@@ -228,39 +185,6 @@ def _quest_id_to_act(quest_id: int) -> int:
     elif quest_id < 300: return 3
     elif quest_id < 400: return 4
     else: return 5
-
-
-def _get_zone_for_quest(quest_id: int, quest_type: str) -> str | None:
-    """Determine which zone key is needed for a quest.
-
-    Returns the zone key name, or None if freely accessible. Returns None
-    for level milestones (progress can happen anywhere) and for any
-    quest whose home area falls in STARTING_AREAS.
-
-    Quests with no map entry fall through to None — historically this
-    meant "freely accessible", but with _build_quest_area_map() now
-    covering every known quest ID, that branch should not fire in
-    practice. If it does, the caller (create_regions) still gates the
-    location by act boss kill, so zone-key bypass is impossible.
-    """
-    # Level milestones are always accessible (can level up anywhere)
-    if quest_type == "level":
-        return None
-
-    area_id = QUEST_ID_TO_AREA.get(quest_id)
-    if area_id is None:
-        return None  # Unknown quest → freely accessible
-
-    # Starting areas never need a zone key
-    if area_id in STARTING_AREAS:
-        return None
-
-    # Find which zone key unlocks this area
-    for key_name, areas in ZONE_KEY_AREAS.items():
-        if area_id in areas:
-            return key_name
-
-    return None  # Area not gated by any key
 
 
 # 1.8.0 NEW — Act region definitions (Python mirror of C g_actRegions).
@@ -756,7 +680,14 @@ def create_regions(world: "Diablo2ArchipelagoWorld") -> None:
                    "extra_npc", "extra_runeword", "extra_cube",
                    "collection")
     for quest_id, loc_name, quest_type, classification, loc_id, diff in active_locations:
-        act_num = _quest_id_to_act(quest_id)
+        # Level milestones use max_acts_needed as the target act so that
+        # e.g. "Reach Level 30" lands in Act 4 (behind the full act chain)
+        # rather than Act 1 where _quest_id_to_act would put it. This
+        # mirrors the zone_locking access rule logic for skill_hunt mode.
+        if quest_type == "level":
+            act_num = QUEST_ID_TO_MAX_ACTS.get(quest_id, 1)
+        else:
+            act_num = _quest_id_to_act(quest_id)
         # 1.9.11 — locations placed in the (act, diff) region matching
         # their own diff field (was: act-only, all diffs collapsed). This
         # is what makes sphere depth work in skill_hunt mode.

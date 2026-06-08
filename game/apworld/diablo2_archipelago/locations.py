@@ -344,11 +344,13 @@ LEVEL_MILESTONES_HELL = [
 # spheres later than the early-act progression they could otherwise
 # block. See regions.py for the rule application.
 QUEST_ID_TO_LEVEL: dict[int, int] = {}
+QUEST_ID_TO_MAX_ACTS: dict[int, int] = {}
 for _milestones in (LEVEL_MILESTONES_NORMAL,
                     LEVEL_MILESTONES_NIGHTMARE,
                     LEVEL_MILESTONES_HELL):
     for _qid, _name, _max_acts, _level in _milestones:
         QUEST_ID_TO_LEVEL[_qid] = _level
+        QUEST_ID_TO_MAX_ACTS[_qid] = _max_acts
 
 ALL_ACT_LOCATIONS = [
     ACT1_LOCATIONS,
