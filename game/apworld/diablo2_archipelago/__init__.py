@@ -12,8 +12,7 @@ from worlds.AutoWorld import World, WebWorld
 
 from .items import (
     item_table, FILLER_ITEMS, ALL_SKILL_ITEMS, ALL_SKILL_ITEMS_WITH_TRAPS,
-    ITEM_BASE, CLASS_SKILLS, ASSASSIN_TRAP_SKILLS, ZONE_KEY_ITEMS,
-    GATE_KEY_ITEMS,
+    ITEM_BASE, CLASS_SKILLS, ASSASSIN_TRAP_SKILLS, GATE_KEY_ITEMS,
 )
 from .locations import (
     location_table, ALL_ACT_LOCATIONS, GOAL_QUEST_IDS, LOCATION_BASE,
@@ -925,7 +924,7 @@ class Diablo2ArchipelagoWorld(World):
             # via ApplyEntranceShuffle, frozen into per-char state file.
             # 1.9.10 — auto-disable when Zone Locking is ON. The two features
             # are fundamentally incompatible: Zone Locking's apworld access
-            # rules read VANILLA zone IDs (regions.py:24-60 ZONE_KEY_AREAS),
+            # rules read VANILLA zone IDs (regions.py ACT_REGIONS),
             # while Entrance Shuffle's DLL warps players via a per-character
             # seeded shuffle map the apworld never sees. Result: gate keys
             # gate the wrong zones, players warped into locked regions get

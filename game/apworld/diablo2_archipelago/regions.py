@@ -10,54 +10,12 @@ from BaseClasses import Region
 
 from .locations import (
     ALL_ACT_LOCATIONS, LOCATION_BASE, ACT_BOSS_QUEST_IDS,
-    QUEST_ID_TO_LEVEL,
+    QUEST_ID_TO_LEVEL, QUEST_ID_TO_MAX_ACTS,
 )
-from .items import ZONE_KEY_ITEMS
 
 if TYPE_CHECKING:
     from . import Diablo2ArchipelagoWorld
 
-
-# Zone key → which quest/area IDs belong to this zone
-# Maps zone key name → list of area IDs that this key unlocks
-# Must match g_zoneKeyDefs in d2arch.c
-ZONE_KEY_AREAS = {
-    "Cold Plains Key":        [3, 9, 13],
-    "Burial Grounds Key":     [17, 18, 19],
-    "Stony Field Key":        [4, 10, 14],
-    "Dark Wood Key":          [5],
-    "Black Marsh Key":        [6, 11, 15, 20, 21, 22, 23, 24, 25],
-    "Tristram Key":           [38],
-    "Monastery Key":          [7, 12, 16, 26, 27, 28],
-    "Jail & Cathedral Key":   [29, 30, 31, 32, 33],
-    "Catacombs Key":          [34, 35, 36],
-    "Andariel's Lair Key":    [37],
-    "Rocky Waste Key":        [41, 47, 48, 49, 55, 59],
-    "Dry Hills Key":          [42, 56, 57, 60],
-    "Far Oasis Key":          [43, 62, 63, 64],
-    "Lost City Key":          [44, 45, 58, 61, 65],
-    "Palace Key":             [50, 51, 52, 53, 54],
-    "Arcane Sanctuary Key":   [74],
-    "Canyon of the Magi Key": [46, 66, 67, 68, 69, 70, 71, 72],
-    "Duriel's Lair Key":      [73],
-    "Spider Forest Key":      [76, 84, 85],
-    "Jungle Key":             [77, 78, 86, 87, 88, 89, 90, 91],
-    "Kurast Key":             [79, 80, 92, 93, 94, 95],
-    "Upper Kurast Key":       [81, 82, 96, 97, 98, 99],
-    "Travincal Key":          [83],
-    "Durance of Hate Key":    [100, 101, 102],
-    "Outer Steppes Key":      [104, 105],
-    "City of the Damned Key": [106],
-    "River of Flame Key":     [107],
-    "Chaos Sanctuary Key":    [108],
-    "Bloody Foothills Key":   [110],
-    "Highlands Key":          [111, 112],
-    "Caverns Key":            [113, 114, 115, 116, 117],
-    "Summit Key":             [118, 119, 120],
-    "Nihlathak Key":          [121, 122, 123, 124],
-    "Worldstone Keep Key":    [128, 129, 130],
-    "Throne of Destruction Key": [131, 132],
-}
 
 # Starting areas (always open, no key needed) — area IDs
 STARTING_AREAS = [1, 2, 8, 40, 75, 103, 109]  # Towns + Blood Moor + Den of Evil
@@ -210,9 +168,8 @@ def _build_quest_area_map() -> None:
     QUEST_ID_TO_AREA.update(act5)
 
     # --- Level milestones ---
-    # Level-up can happen in any area. Mark as "freely accessible" via
-    # starting area 1 (Rogue Camp). _get_zone_for_quest short-circuits
-    # on quest_type == "level", so this entry is informational only.
+    # Level-up can happen in any area. Entries here are informational only;
+    # quest_type == "level" is handled separately in create_regions.
     for qid in (78, 79, 81, 82, 83, 180, 181, 182, 183, 184,
                 282, 283, 284, 285):
         QUEST_ID_TO_AREA.setdefault(qid, 1)
@@ -228,39 +185,6 @@ def _quest_id_to_act(quest_id: int) -> int:
     elif quest_id < 300: return 3
     elif quest_id < 400: return 4
     else: return 5
-
-
-def _get_zone_for_quest(quest_id: int, quest_type: str) -> str | None:
-    """Determine which zone key is needed for a quest.
-
-    Returns the zone key name, or None if freely accessible. Returns None
-    for level milestones (progress can happen anywhere) and for any
-    quest whose home area falls in STARTING_AREAS.
-
-    Quests with no map entry fall through to None — historically this
-    meant "freely accessible", but with _build_quest_area_map() now
-    covering every known quest ID, that branch should not fire in
-    practice. If it does, the caller (create_regions) still gates the
-    location by act boss kill, so zone-key bypass is impossible.
-    """
-    # Level milestones are always accessible (can level up anywhere)
-    if quest_type == "level":
-        return None
-
-    area_id = QUEST_ID_TO_AREA.get(quest_id)
-    if area_id is None:
-        return None  # Unknown quest → freely accessible
-
-    # Starting areas never need a zone key
-    if area_id in STARTING_AREAS:
-        return None
-
-    # Find which zone key unlocks this area
-    for key_name, areas in ZONE_KEY_AREAS.items():
-        if area_id in areas:
-            return key_name
-
-    return None  # Area not gated by any key
 
 
 # 1.8.0 NEW — Act region definitions (Python mirror of C g_actRegions).
@@ -732,39 +656,104 @@ def create_regions(world: "Diablo2ArchipelagoWorld") -> None:
                 f"{DIFF_NAME[diff]} complete -> {DIFF_NAME[diff + 1]}",
             )
 
-    # SKILL HUNT mode: locations placed in act_regions with no per-location
-    # access rule. Skills are useful (not progression) so AP fill never
-    # places anything that could break the player's seed. In multiworld
-    # mode, other players' progression items may land at this slot's
-    # Hell/NM locations — that's a pacing concern (this slot has to
-    # progress to Hell before forwarding the key) but not a logic
-    # softlock since act_regions already chain via boss_connections.
-    # Users sensitive to multiworld pacing should set
-    # progression_balancing higher to spread items more evenly.
-    # 1.9.0 — Bonus check locations get marked EXCLUDED so AP fill
-    # cannot place progression items at them. The escalating-chance
-    # roll on the DLL side may not consume every slot, and stranded
-    # progression items would soft-lock multiworld players. Filler-only
-    # items at these slots are harmless if never collected.
+    # SKILL HUNT mode: within-act tier sub-regions.
+    # Each (act_num, diff) is split into depth tiers matching ACT_REGIONS.
+    # Tier 1 is the existing act_region (already wired into boss_connections).
+    # Tiers 2-N are new regions gated on the deepest story quest from the
+    # prior tier via can_reach_location. If a tier has no story quest the
+    # connection is unconditional (tiers merge in sphere depth).
+    #
+    # Entrance Shuffle exception: the shuffler moves dead-end cave entrances
+    # whose physical locations match the zone IDs our tier boundaries depend on.
+    # Several story-quest anchors also live in shuffleable caves (e.g. Sisters'
+    # Burial Grounds, area 17), so conditional tier gates could create circular
+    # dependencies when shuffle moves that cave to a deeper tier. When
+    # entrance_shuffle is ON all tier connections are unconditional — the act-to-
+    # act boss gates still apply, only within-act depth is flattened.
+    #
+    # Bonus/extra check locations are EXCLUDED so AP fill never places
+    # progression items at escalating-chance slots that may not be consumed.
     from BaseClasses import LocationProgressType
-    # 1.9.10 — added "collection" alongside bonus/extra types so Goal=3
-    # collection-event locations get filler-only (EXCLUDED) treatment,
-    # preventing AP fill from placing progression items at "Collection: Zod
-    # Rune" etc. where the player may never trigger the check.
     BONUS_TYPES = ("bonus_object", "bonus_gold", "bonus_setpickup",
                    "extra_cow", "extra_merc", "extra_hfrunes",
                    "extra_npc", "extra_runeword", "extra_cube",
                    "collection")
+    entrance_shuffled = (
+        hasattr(world.options, "entrance_shuffle")
+        and bool(world.options.entrance_shuffle.value)
+    )
+
+    act_sub_regions: dict[tuple[int, int, int], Region] = {}
+    for diff in range(num_diffs):
+        for act_num in range(1, max_act + 1):
+            act_sub_regions[(act_num, diff, 1)] = act_regions[(act_num, diff)]
+            num_tiers = len(ACT_REGIONS.get(act_num, {}))
+            for tier in range(2, num_tiers + 1):
+                r = Region(
+                    f"Act {act_num} {DIFF_NAME[diff]} Tier {tier}",
+                    player, multiworld,
+                )
+                multiworld.regions.append(r)
+                act_sub_regions[(act_num, diff, tier)] = r
+
+    for diff in range(num_diffs):
+        for act_num in range(1, max_act + 1):
+            num_tiers = len(ACT_REGIONS.get(act_num, {}))
+            # Per tier: find the story quest with the highest quest_id.
+            # That quest is the natural "end of tier" checkpoint gating the next.
+            best: dict[int, tuple[int, str]] = {}  # tier -> (qid, loc_name)
+            for quest_id, name, quest_type, _ in ALL_ACT_LOCATIONS[act_num - 1]:
+                if quest_type != "story":
+                    continue
+                loc_name = _loc_at(name, diff)
+                if loc_name not in active_loc_names:
+                    continue
+                zone_id = QUEST_ID_TO_AREA.get(quest_id)
+                if zone_id is None:
+                    continue
+                physical = _zone_to_region(zone_id)
+                if physical is None:
+                    continue
+                tier = physical[1]
+                if tier not in best or quest_id > best[tier][0]:
+                    best[tier] = (quest_id, loc_name)
+
+            for tier in range(1, num_tiers):
+                src = act_sub_regions[(act_num, diff, tier)]
+                dst = act_sub_regions[(act_num, diff, tier + 1)]
+                lbl = f"Act {act_num} T{tier}->T{tier+1} ({DIFF_NAME[diff]})"
+                anchor_entry = None if entrance_shuffled else best.get(tier)
+                if anchor_entry:
+                    anc = anchor_entry[1]
+                    src.connect(dst, lbl,
+                        lambda state, p=player, a=anc:
+                            state.can_reach_location(a, p))
+                else:
+                    src.connect(dst, lbl)
+
     for quest_id, loc_name, quest_type, classification, loc_id, diff in active_locations:
-        act_num = _quest_id_to_act(quest_id)
-        # 1.9.11 — locations placed in the (act, diff) region matching
-        # their own diff field (was: act-only, all diffs collapsed). This
-        # is what makes sphere depth work in skill_hunt mode.
-        if (act_num, diff) in act_regions:
-            loc = world.create_location(loc_name, loc_id, act_regions[(act_num, diff)])
-            if quest_type in BONUS_TYPES:
-                loc.progress_type = LocationProgressType.EXCLUDED
-            act_regions[(act_num, diff)].locations.append(loc)
+        if quest_type == "level":
+            target_act  = QUEST_ID_TO_MAX_ACTS.get(quest_id, 1)
+            target_tier = 1
+        else:
+            target_act = _quest_id_to_act(quest_id)
+            zone_id = QUEST_ID_TO_AREA.get(quest_id)
+            if zone_id is not None and zone_id not in ALWAYS_OPEN_ZONES:
+                physical = _zone_to_region(zone_id)
+                target_tier = physical[1] if physical is not None else 1
+            else:
+                target_tier = 1
+
+        target_region = act_sub_regions.get(
+            (target_act, diff, target_tier),
+            act_regions.get((target_act, diff)),
+        )
+        if target_region is None:
+            continue
+        loc = world.create_location(loc_name, loc_id, target_region)
+        if quest_type in BONUS_TYPES:
+            loc.progress_type = LocationProgressType.EXCLUDED
+        target_region.locations.append(loc)
 
 
 def diff_name_fromdiff(d):

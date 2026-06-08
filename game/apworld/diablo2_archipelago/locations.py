@@ -107,7 +107,7 @@ ACT2_LOCATIONS = [
     (171, "Hunt: Bloodwitch",             "hunt",     ItemClassification.progression),
     (172, "Hunt: Fangskin",               "hunt",     ItemClassification.progression),
     (173, "Hunt: Beetleburst",            "hunt",     ItemClassification.progression),
-    (174, "Hunt: Leatherarm",             "hunt",     ItemClassification.progression),
+    (174, "Hunt: Creeping Feature",        "hunt",     ItemClassification.progression),
     (175, "Hunt: Coldworm",               "hunt",     ItemClassification.progression),
     (176, "Hunt: Fire Eye",               "hunt",     ItemClassification.progression),
     (177, "Hunt: Dark Elder",             "hunt",     ItemClassification.progression),
@@ -167,7 +167,7 @@ ACT3_LOCATIONS = [
     (206, "The Guardian",                 "story",    ItemClassification.progression),
     # SuperUnique hunts - progression
     # NOTE: The Smith (270) moved to Act 1 where it spawns (Barracks)
-    (271, "Hunt: Web Mage",              "hunt",     ItemClassification.progression),
+    (271, "Hunt: Sszark the Burning",     "hunt",     ItemClassification.progression),
     (272, "Hunt: Witch Doctor Endugu",    "hunt",     ItemClassification.progression),
     (273, "Hunt: Stormtree",              "hunt",     ItemClassification.progression),
     (274, "Hunt: Sarina",                 "hunt",     ItemClassification.progression),
@@ -261,7 +261,7 @@ ACT5_LOCATIONS = [
     (405, "Rite of Passage",              "story",    ItemClassification.progression),
     (406, "Eve of Destruction",           "story",    ItemClassification.progression),
     # SuperUnique hunts - progression
-    (470, "Hunt: Siege Boss",             "hunt",     ItemClassification.progression),
+    (470, "Hunt: Shenk the Overseer",     "hunt",     ItemClassification.progression),
     (471, "Hunt: Dac Farren",             "hunt",     ItemClassification.progression),
     (472, "Hunt: Bonesaw Breaker",        "hunt",     ItemClassification.progression),
     (473, "Hunt: Eyeback Unleashed",      "hunt",     ItemClassification.progression),
@@ -344,11 +344,13 @@ LEVEL_MILESTONES_HELL = [
 # spheres later than the early-act progression they could otherwise
 # block. See regions.py for the rule application.
 QUEST_ID_TO_LEVEL: dict[int, int] = {}
+QUEST_ID_TO_MAX_ACTS: dict[int, int] = {}
 for _milestones in (LEVEL_MILESTONES_NORMAL,
                     LEVEL_MILESTONES_NIGHTMARE,
                     LEVEL_MILESTONES_HELL):
     for _qid, _name, _max_acts, _level in _milestones:
         QUEST_ID_TO_LEVEL[_qid] = _level
+        QUEST_ID_TO_MAX_ACTS[_qid] = _max_acts
 
 ALL_ACT_LOCATIONS = [
     ACT1_LOCATIONS,
