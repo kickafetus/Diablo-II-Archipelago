@@ -195,7 +195,8 @@ BOOL StkSaveAP(const char* charName);
 /* 1.9.0 NEW — STK helpers used by deposit / pickup / render paths. */
 int  StkFindCellForCode(int tabCategoryIdx, DWORD dwCode);  /* returns cellIdx 0..99, or -1 */
 BOOL StkDeposit(BOOL useApScope, int tabCategoryIdx, int cellIdx,
-                DWORD dwCode, const BYTE* templateBytes, WORD templateLen);
+                DWORD dwCode, const BYTE* templateBytes, WORD templateLen,
+                int qty);
 BOOL StkPickupOne(BOOL useApScope, int tabCategoryIdx, int cellIdx,
                   BYTE* outTemplate, WORD* outLen);
 

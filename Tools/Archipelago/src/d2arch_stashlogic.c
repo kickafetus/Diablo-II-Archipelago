@@ -1633,19 +1633,41 @@ BOOL StkClickPickup(int mx, int my) {
             return TRUE;  /* swallow click; cursor item stays */
         }
 
-        /* Match! Deposit the cursor item. */
+        /* Match! Deposit the cursor item.
+         *
+         * 1.9.13 fix — this path has the SAME "destroys the whole
+         * physical stack but only credits +1" bug as the shift+right-click
+         * auto-deposit (see StkDeposit's doc comment for the full writeup):
+         * read the cursor item's TRUE unit count via STAT_QUANTITY
+         * (ItemStatCost stat 70 — what D2 itself shows on the tooltip and
+         * decrements on use) BEFORE RemoveItemIfOnCursor destroys it below,
+         * and credit that full amount in one shot. All-or-nothing against
+         * the 999 cap, same as StkDeposit, so we never bank part of a
+         * stack while destroying the rest. Items with no quantity stat
+         * (runes, gems, single-instance uniques, …) read back 0 and fall
+         * back to the historical qty=1, which is already correct for them. */
+        int cursorQty = 1;
+        if (fnGetStat) {
+            __try {
+                int q = fnGetStat(pCursorItem, 70 /* STAT_QUANTITY, ItemStatCost.txt */, 0);
+                if (q > 1) cursorQty = q;
+            } __except(EXCEPTION_EXECUTE_HANDLER) {}
+        }
+
         StkTab* tabD = useApScope ? &g_stashStkAp[categoryIdx]
                                    : &g_stashStkSh[categoryIdx];
         StkSlot* slotD = &tabD->slots[cellIdx];
-        if (slotD->count >= STK_MAX_STACK_COUNT) {
-            Log("StkPickup: stack full at cell %d — deposit rejected\n", cellIdx);
+        if (slotD->count + (DWORD)cursorQty > STK_MAX_STACK_COUNT) {
+            Log("StkPickup: cell %d has %u, dropping %d more would exceed the "
+                "%d-stack cap — deposit rejected (cursor item kept)\n",
+                cellIdx, (unsigned)slotD->count, cursorQty, STK_MAX_STACK_COUNT);
             /* 1.9.0 Phase 4 — flash red on stack-full rejection. */
             extern void Stk_FlashBadDrop(int tabCategory, int cellIdx);
             Stk_FlashBadDrop(categoryIdx, cellIdx);
             return TRUE;
         }
         slotD->dwCode = layoutCode;
-        slotD->count++;
+        slotD->count += (DWORD)cursorQty;
         tabD->lastModifiedTick = GetTickCount();
 
         /* Properly dispose of the cursor item. Just clearing the
@@ -1729,8 +1751,8 @@ BOOL StkClickPickup(int mx, int my) {
             if (useApScope) StkSaveAP(g_charName);
             else            StkSaveShared();
         }
-        Log("StkPickup: drag-drop DEPOSIT cat=%d cell=%d (count now %u) — cursor cleared\n",
-            categoryIdx, cellIdx, (unsigned)slotD->count);
+        Log("StkPickup: drag-drop DEPOSIT cat=%d cell=%d qty=%d (count now %u) — cursor cleared\n",
+            categoryIdx, cellIdx, cursorQty, (unsigned)slotD->count);
         return TRUE;
     }
     /* No cursor item — fall through to pickup logic below. */
@@ -2016,8 +2038,28 @@ BOOL StashQuickMoveToStash(void) {
         __try { itemClassId = *(DWORD*)((DWORD)pCliItem + 0x04); }
         __except(EXCEPTION_EXECUTE_HANDLER) { itemClassId = 0; }
 
-        Log("StashQuick: STK auto-deposit attempt — tab=%d cat=%d clsId=%u\n",
-            g_activeStashTab, categoryIdx, (unsigned)itemClassId);
+        /* 1.9.13 fix — "shift+right-click a stack of 14 keys only banks 1,
+         * the other 13 are destroyed" bug. Read the item's TRUE stack size
+         * now, before this branch destroys the physical item below. Stat 70
+         * is "quantity" in ItemStatCost.txt — the exact stat D2 itself shows
+         * on the tooltip ("x14") and decrements on use for tomes / scrolls /
+         * keys / potions / arrows (see Research/HOOK_RESEARCH_2026-04-30_
+         * logbook_events.md and Research/RIFT_REAL_DESIGN_v2.md's
+         * `fnSetStat(70)` note). Items that carry no quantity stat — runes,
+         * gems, jewels, single-instance uniques, … — read back 0; those are
+         * exactly the items for which "1 physical = 1 virtual" is already
+         * correct, so 0 (or any unexpected non-positive read) falls back to
+         * the historical qty=1 instead of being taken literally. */
+        int depositQty = 1;
+        if (fnGetStat) {
+            __try {
+                int q = fnGetStat(pCliItem, 70 /* STAT_QUANTITY, ItemStatCost.txt */, 0);
+                if (q > 1) depositQty = q;
+            } __except(EXCEPTION_EXECUTE_HANDLER) {}
+        }
+
+        Log("StashQuick: STK auto-deposit attempt — tab=%d cat=%d clsId=%u qty=%d\n",
+            g_activeStashTab, categoryIdx, (unsigned)itemClassId, depositQty);
 
         /* Resolve the cell's dwCode -> classId on the fly. The layout
          * stores 4-byte space-padded codes; D2Common ord 10601 maps a
@@ -2082,10 +2124,11 @@ BOOL StashQuickMoveToStash(void) {
         }
 
         BOOL ok = StkDeposit(useApScope, categoryIdx, matchCellIdx,
-                             layoutCode, tplBuf, tplLen);
+                             layoutCode, tplBuf, tplLen, depositQty);
         if (!ok) {
-            Log("StashQuick: STK deposit REJECTED (cell %d full or invalid)\n",
-                matchCellIdx);
+            Log("StashQuick: STK deposit REJECTED (cell %d full, invalid, "
+                "or qty=%d would exceed the %d-stack cap)\n",
+                matchCellIdx, depositQty, STK_MAX_STACK_COUNT);
             return FALSE;
         }
 
@@ -2139,8 +2182,8 @@ BOOL StashQuickMoveToStash(void) {
             if (useApScope) StkSaveAP(g_charName);
             else            StkSaveShared();
         }
-        Log("StashQuick: STK deposit OK (cat=%d cell=%d code=%08X tplLen=%u)\n",
-            categoryIdx, matchCellIdx, layoutCode, (unsigned)tplLen);
+        Log("StashQuick: STK deposit OK (cat=%d cell=%d code=%08X tplLen=%u qty=%d)\n",
+            categoryIdx, matchCellIdx, layoutCode, (unsigned)tplLen, depositQty);
         return TRUE;
     }
 

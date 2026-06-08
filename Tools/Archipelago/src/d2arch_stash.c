@@ -884,15 +884,33 @@ int StkFindCellForCode(int tabCategoryIdx, DWORD dwCode) {
     return -1;
 }
 
-/* Deposit one item into the cell. If the cell already holds a stack of
- * the same code, increment count. If empty, store the template bytes
- * and start at count=1. Returns FALSE if the deposit is rejected
- * (mismatched code, black cell, or stack at max). */
+/* Deposit `qty` units of an item into the cell in ONE shot. qty=1 for
+ * ordinary single-instance items (runes, gems, jewels, uniques, ... —
+ * "1 physical item = 1 virtual unit" is correct for those). qty>1 for
+ * natively-stackable items — Skeleton Keys, Portal/ID Scrolls, Tomes,
+ * throwing Potions, Arrows/Bolts — so the FULL stack the player clicked
+ * is credited at once instead of +1 while the physical stack of N is
+ * destroyed by the caller right after (1.9.13 fix for "shift+right-click
+ * a stack of 14 keys only banks 1, the other 13 vanish"). The caller
+ * reads the item's true count via STAT_QUANTITY (ItemStatCost stat 70 —
+ * the same stat D2 shows on the tooltip and decrements on use) before
+ * this is called and passes it through as `qty`.
+ *
+ * If the cell already holds a stack of the same code, qty is added to
+ * the running count. If empty, the template bytes are stored and count
+ * starts at qty. The WHOLE deposit is rejected — slot untouched, caller
+ * does not destroy the source item — if crediting qty would push the
+ * slot over STK_MAX_STACK_COUNT; we never silently bank part of a stack
+ * and drop the remainder, which would just be a smaller copy of the bug
+ * this replaces. Returns FALSE if rejected (mismatched code, black
+ * cell, or would-overflow cap). */
 BOOL StkDeposit(BOOL useApScope, int tabCategoryIdx, int cellIdx,
-                DWORD dwCode, const BYTE* templateBytes, WORD templateLen) {
+                DWORD dwCode, const BYTE* templateBytes, WORD templateLen,
+                int qty) {
     if (tabCategoryIdx < 0 || tabCategoryIdx >= STASH_NUM_STK_TABS) return FALSE;
     if (cellIdx < 0 || cellIdx >= STASH_SLOTS_PER_TAB) return FALSE;
     if (templateLen > STK_TEMPLATE_BYTES) templateLen = STK_TEMPLATE_BYTES;
+    if (qty < 1) qty = 1;
 
     StkLayoutEntry* layout = &g_stkLayout[tabCategoryIdx][cellIdx];
     if (layout->dwCode == 0) {
@@ -907,18 +925,19 @@ BOOL StkDeposit(BOOL useApScope, int tabCategoryIdx, int cellIdx,
     StkTab* tab = useApScope ? &g_stashStkAp[tabCategoryIdx] : &g_stashStkSh[tabCategoryIdx];
     StkSlot* slot = &tab->slots[cellIdx];
 
+    if (slot->count + (DWORD)qty > STK_MAX_STACK_COUNT) {
+        Stk_FlashBadDrop(tabCategoryIdx, cellIdx);  /* 1.9.0 Phase 4 */
+        return FALSE;  /* would overflow the 999 cap — reject whole deposit */
+    }
+
     if (slot->count == 0) {
         slot->dwCode = dwCode;
         if (templateBytes && templateLen > 0)
             memcpy(slot->tplBytes, templateBytes, templateLen);
         slot->templateBytes = templateLen;
-        slot->count = 1;
-    } else if (slot->count < STK_MAX_STACK_COUNT) {
-        slot->count++;
-    } else {
-        Stk_FlashBadDrop(tabCategoryIdx, cellIdx);  /* 1.9.0 Phase 4 */
-        return FALSE;  /* stack at 999 max */
     }
+    slot->count += (DWORD)qty;
+
     tab->lastModifiedTick = GetTickCount();
     return TRUE;
 }

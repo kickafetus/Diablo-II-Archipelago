@@ -31,7 +31,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -44,7 +44,16 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name='ap_bridge',
 )
+# 1.9.13 — upx=False (was True). UPX-compressed PyInstaller binaries are
+# one of THE most common antivirus false-positive triggers: AV heuristic
+# engines specifically watch for the UPX packer signature/entropy because
+# malware authors use it to obfuscate payloads. Disabling it is the
+# #1 community-recommended fix for "my frozen Python exe gets flagged as
+# a virus" reports. (UPX isn't even installed on this build machine today,
+# so this was already a no-op — but leaving `upx=True` in the spec meant
+# any future machine that DOES have upx.exe on PATH would silently start
+# compressing ap_bridge.exe and reintroducing the exact risk Marco hit.)

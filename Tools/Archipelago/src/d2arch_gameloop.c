@@ -65,209 +65,57 @@ static int __cdecl HookD2DebugGame(void* pGame) {
      * ProcessPendingGameTick below — HookD2DebugGame is unreliable on many
      * user setups, while GAME_UpdateClients always fires. */
 
-    /* Process trap spawns HERE — in GAME_UpdateProgress context, like the debug menu */
-    if (g_pendingTrapSpawn > 0 && fnSpawnSuperUnique && pGame) {
-        __try {
-            void* pServerPlayer = GetServerPlayer((DWORD)pGame);
-            if (!pServerPlayer) {
-                static int noPlayerLog = 0;
-                if (noPlayerLog++ < 3) Log("TRAP: GetServerPlayer returned NULL\n");
-            } else {
-                DWORD pPath = *(DWORD*)((DWORD)pServerPlayer + 0x2C);
-                if (!pPath) {
-                    Log("TRAP: server player pPath is NULL\n");
-                } else {
-                    DWORD pRoom = *(DWORD*)(pPath + 0x1C);
-                    int nX = (int)*(unsigned short*)(pPath + 0x02);
-                    int nY = (int)*(unsigned short*)(pPath + 0x06);
-
-                    Log("TRAP: serverPlayer=%08X pPath=%08X pRoom=%08X coords=(%d,%d)\n",
-                        (DWORD)pServerPlayer, pPath, pRoom, nX, nY);
-
-                    if (pRoom && nX > 0 && nY > 0) {
-                        /* 1.8.0 — Level-matched trap spawn.
-                         * Old behavior always used Baal Subjects (SU 61-65, lvl 85)
-                         * which instakilled low-level characters. Now we pick a SU
-                         * tier appropriate to player's current character level:
-                         *   lvl 1-15:  early SUs (Bishibosh, Rakanishu, Corpsefire, Bonebreak)
-                         *   lvl 15-30: mid Act 2-3 (Fangskin, Bloodwitch, Coldworm, Fire Eye)
-                         *   lvl 30-50: Act 3-4 (Endugu, Stormtree, Winged Death, Tormentor)
-                         *   lvl 50-70: Act 5 mid-tier (Eyeback, Snapchip, Sharp Tooth)
-                         *   lvl 70+:   Baal Subjects (old behavior — end-game difficulty)
-                         */
-                        int charLevel = 1;
-                        if (fnGetStat) {
-                            __try { charLevel = fnGetStat(pServerPlayer, 12, 0); }  /* STAT_LEVEL */
-                            __except(EXCEPTION_EXECUTE_HANDLER) { charLevel = 1; }
-                        }
-                        if (charLevel < 1) charLevel = 1;
-                        if (charLevel > 99) charLevel = 99;
-
-                        const int* trapBossIds;
-                        int numBosses;
-                        static const int tierLow[]  = { 0, 1, 2, 3, 40 };          /* 5 — lvl 1-15 */
-                        static const int tierMidL[] = { 4, 7, 11, 12, 14, 15, 16 };/* 7 — lvl 15-30 */
-                        static const int tierMidH[] = { 22, 23, 25, 32, 33, 34 };  /* 6 — lvl 30-50 */
-                        static const int tierHigh[] = { 19, 48, 50, 52, 53, 56 };  /* 6 — lvl 50-70 */
-                        static const int tierEnd[]  = { 61, 62, 63, 64, 65 };      /* 5 — lvl 70+ */
-
-                        if      (charLevel < 15) { trapBossIds = tierLow;  numBosses = 5; }
-                        else if (charLevel < 30) { trapBossIds = tierMidL; numBosses = 7; }
-                        else if (charLevel < 50) { trapBossIds = tierMidH; numBosses = 6; }
-                        else if (charLevel < 70) { trapBossIds = tierHigh; numBosses = 6; }
-                        else                     { trapBossIds = tierEnd;  numBosses = 5; }
-
-                        DWORD tickSeed = GetTickCount();
-                        int suId = trapBossIds[(tickSeed ^ (tickSeed >> 16)) % numBosses];
-
-                        Log("TRAP: charLvl=%d tier-picked SU=%d (pool size %d)\n",
-                            charLevel, suId, numBosses);
-
-                        Log("TRAP: Spawning SuperUnique #%d at (%d,%d) pGame=%08X pRoom=%08X\n",
-                            suId, nX, nY, (DWORD)pGame, pRoom);
-
-                        void* spawned = fnSpawnSuperUnique(pGame, (void*)pRoom, nX, nY, suId);
-                        if (spawned) {
-                            Log("TRAP: SuperUnique #%d spawned OK!\n", suId);
-                        } else {
-                            for (int retry = 0; retry < 5; retry++) {
-                                DWORD retrySeed = GetTickCount();
-                                suId = trapBossIds[((retrySeed + retry * 7919) ^ (retrySeed >> 8)) % numBosses];
-                                spawned = fnSpawnSuperUnique(pGame, (void*)pRoom, nX, nY, suId);
-                                if (spawned) { Log("TRAP: Retry %d: #%d spawned!\n", retry+1, suId); break; }
-                            }
-                            if (!spawned) Log("TRAP: All retries failed\n");
-                        }
-                        g_pendingTrapSpawn--;
-                    } else {
-                        Log("TRAP: bad room/coords: pRoom=%08X nX=%d nY=%d\n", pRoom, nX, nY);
-                    }
-                }
-            }
-        } __except(EXCEPTION_EXECUTE_HANDLER) {
-            Log("TRAP: Exception in spawn!\n");
-            g_pendingTrapSpawn--;
-        }
-    }
+    /* Trap-spawn SuperUnique consumer REMOVED 2026-06-08 (1.9.13 audit fix):
+     * this hook used to ALSO consume g_pendingTrapSpawn here — spawning a
+     * level-tiered SuperUnique boss via fnSpawnSuperUnique with NO town
+     * check whatsoever — racing unsynchronized against
+     * ProcessPendingGameTick’s own consumer below (which spawns an 8-12
+     * monster pack WITH proper town-deferral + a 5-minute watchdog, the
+     * 1.8.5 fix for "traps silently dropped during shopping/stash/
+     * identify"). On setups where this D2DebugGame hook actually fires,
+     * a single triggered trap could produce BOTH a boss AND a monster
+     * pack from one trap-check completion, and/or drop a dangerous
+     * level-matched boss directly in town while the player shops —
+     * exactly the disruptive behavior the 1.8.5 town-deferral rewrite
+     * exists to prevent. Same root issue as the CustomBoss_Tick move
+     * and the g_pendingZoneTeleport fix (Bug #4) above — same cure:
+     * trust only the hook proven to fire reliably on every setup, and
+     * keep a single owner per pending-queue counter. */
 
     /* 1.8.0 cleanup: Treasure Cow Levels.txt approach comment extracted */
 
     /* Cheat commands processed in ProcessPendingGameTick */
 
-    /* Apply pending rewards LIVE via server-side fnAddStat.
-     * Called on GetServerPlayer in game tick context — same approach
-     * as D2MOO's own quest reward code (A1Q1.cpp: STATLIST_AddUnitStat). */
-    {
-        static int s_appliedGold = 0;
-        static int s_appliedStatPts = 0;
-        static int s_appliedSkillPts = 0;
-        void* pPlayer = GetServerPlayer((DWORD)pGame);
-        if (pPlayer && fnAddStat) {
-            int newGold = g_pendingRewardGold - s_appliedGold;
-            int newStatPts = g_pendingRewardStatPts - s_appliedStatPts;
-            int newSkillPts = g_pendingRewardSkillPts - s_appliedSkillPts;
-            __try {
-                if (newGold > 0) {
-                    fnAddStat(pPlayer, STAT_GOLD, newGold, 0);
-                    s_appliedGold = g_pendingRewardGold;
-                }
-                if (newStatPts > 0) {
-                    fnAddStat(pPlayer, STAT_STATPTS, newStatPts, 0);
-                    s_appliedStatPts = g_pendingRewardStatPts;
-                }
-                if (newSkillPts > 0) {
-                    fnAddStat(pPlayer, STAT_NEWSKILLS, newSkillPts, 0);
-                    s_appliedSkillPts = g_pendingRewardSkillPts;
-                }
-            } __except(EXCEPTION_EXECUTE_HANDLER) {
-                static int addStatErr = 0;
-                if (addStatErr++ < 3)
-                    Log("Live reward apply exception\n");
-            }
-        }
-        /* Reset applied counters when pending is zeroed (after .d2s write) */
-        if (g_pendingRewardGold == 0) s_appliedGold = 0;
-        if (g_pendingRewardStatPts == 0) s_appliedStatPts = 0;
-        if (g_pendingRewardSkillPts == 0) s_appliedSkillPts = 0;
-    }
+    /* Reward-apply consumer RELOCATED 2026-06-08 (1.9.13 audit fix) to
+     * ProcessPendingGameTick below — this was the ONLY code anywhere
+     * that ever turned g_pendingRewardGold/StatPts/SkillPts into an
+     * actual fnAddStat() grant, and it lived entirely inside this
+     * unreliable hook. On setups where D2DebugGame doesn’t fire, every
+     * queued standalone-mode Collection/Bonus/Extra Check reward sat
+     * here forever — displayed and visibly growing in the quest-log
+     * "Gold" counter — until ResetD2SFile silently zeroed it at the
+     * very next character load or exit, without the gold ever reaching
+     * the character. Same root issue as the CustomBoss_Tick move and
+     * the g_pendingZoneTeleport fix (Bug #4) above — same cure: this
+     * logic now lives in the hook proven to fire reliably on every
+     * setup. Logic unchanged; only the house it lives in. */
 
-    /* Zone Gating: use LEVEL_WarpUnit from server context.
-     * pGame+0x88 = pClientList (D2ClientStrc*), pClient+0x174 = pPlayer (D2UnitStrc*)
-     * LEVEL_WarpUnit at D2Game+0x3C410: __fastcall(pGame, pPlayer, levelId, tileCalc) */
-    if (g_pendingZoneTeleport > 0 && pGame) {
-        int townArea = g_pendingZoneTeleport;
-        g_pendingZoneTeleport = 0;
-
-        static FARPROC fnWarpUnit = NULL;
-        static BOOL warpResolved = FALSE;
-        if (!warpResolved) {
-            warpResolved = TRUE;
-            HMODULE hD2Game = GetModuleHandleA("D2Game.dll");
-            if (hD2Game) {
-                fnWarpUnit = (FARPROC)((DWORD)hD2Game + 0xC410);
-                Log("WARP: resolved LEVEL_WarpUnit at %08X (D2Game=%08X)\n",
-                    (DWORD)fnWarpUnit, (DWORD)hD2Game);
-            }
-        }
-
-        /* (Hook prologue probe lives in ProcessPendingGameTick now —
-         * the previous placement was inside g_pendingZoneTeleport
-         * gating which only fires on death-respawn, so the probe
-         * never ran during normal play.) */
-
-        if (fnWarpUnit) {
-            __try {
-                /* Scan pGame for the client list pointer.
-                 * D2MOO says pClientList at +0x88, pPlayer at pClient+0x174.
-                 * But D2MOO reference may not match our D2.Detours build exactly.
-                 * Dump nearby offsets to find the right one. */
-                static BOOL dumpDone = FALSE;
-                if (!dumpDone) {
-                    dumpDone = TRUE;
-                    Log("WARP DIAGNOSTIC: pGame=%08X, scanning for client pointer...\n", (DWORD)pGame);
-                    for (int off = 0x00; off <= 0x200; off += 4) {
-                        DWORD val = 0;
-                        __try { val = *(DWORD*)((DWORD)pGame + off); } __except(1) { continue; }
-                        if (val < 0x10000 || val > 0x7FFFFFFF) continue;
-                        /* Check if this looks like a D2ClientStrc by reading offset 0x174 */
-                        __try {
-                            DWORD maybeUnit = *(DWORD*)(val + 0x174);
-                            if (maybeUnit > 0x10000 && maybeUnit < 0x7FFFFFFF) {
-                                /* Check if the unit looks valid: unit+0x00 = unitType (should be 0 for player) */
-                                DWORD unitType = *(DWORD*)(maybeUnit + 0x00);
-                                DWORD classId = *(DWORD*)(maybeUnit + 0x04);
-                                DWORD unitId = *(DWORD*)(maybeUnit + 0x08);
-                                Log("  pGame+0x%03X = %08X -> +0x174 = %08X (type=%d class=%d id=%d)\n",
-                                    off, val, maybeUnit, unitType, classId, unitId);
-                            }
-                        } __except(1) {}
-                    }
-                }
-
-                /* Try to get player unit */
-                DWORD pClient = 0;
-                DWORD pUnit = 0;
-
-                /* Try offset 0x88 first (D2MOO reference) */
-                __try { pClient = *(DWORD*)((DWORD)pGame + 0x88); } __except(1) {}
-                if (pClient > 0x10000) {
-                    __try { pUnit = *(DWORD*)(pClient + 0x174); } __except(1) {}
-                }
-
-                if (pUnit > 0x10000) {
-                    typedef void (__fastcall *WarpUnit_t)(void*, void*, int, int);
-                    Log("WARP: calling LEVEL_WarpUnit(pGame=%08X, pUnit=%08X, level=%d, tile=0)\n",
-                        (DWORD)pGame, pUnit, townArea);
-                    ((WarpUnit_t)fnWarpUnit)(pGame, (void*)pUnit, townArea, 0);
-                    Log("WARP: LEVEL_WarpUnit returned OK!\n");
-                } else {
-                    Log("WARP: could not find player unit (pClient=%08X, pUnit=%08X)\n", pClient, pUnit);
-                }
-            } __except(EXCEPTION_EXECUTE_HANDLER) {
-                Log("WARP: LEVEL_WarpUnit CRASHED!\n");
-            }
-        }
-    }
+    /* Zone Gating: g_pendingZoneTeleport is consumed SOLELY by
+     * ProcessPendingGameTick below (the GAME_UpdateClients hook) — not here.
+     *
+     * Removed 2026-06-08 (1.9.13, Bug #4): this hook used to ALSO consume
+     * g_pendingZoneTeleport and call LEVEL_WarpUnit, racing unsynchronized
+     * against ProcessPendingGameTick's own consumer (which holds the flag
+     * non-zero for the full duration of its LEVEL_WarpUnit call before
+     * clearing it — see d2arch_gameloop.c ~line 770). On setups where this
+     * D2DebugGame hook actually fires — it doesn't on all of them, see the
+     * "environment-dependent" note above — both consumers could observe the
+     * flag as pending and BOTH invoke the non-reentrant LEVEL_WarpUnit on the
+     * same unit during a single level transition, corrupting engine state and
+     * crashing. That produced an unreproducible "crash on zone change" report:
+     * real on machines where this hook fires, invisible everywhere else.
+     * Same root issue as the CustomBoss_Tick move above — same fix: trust
+     * only the hook that always fires, don't run the same logic twice. */
 
     /* Call original D2DebugGame */
     return ((D2DebugGame_t)(void*)g_debugGameTrampoline)(pGame);
@@ -309,6 +157,51 @@ static void ProcessPendingGameTick(void) {
         TreasureCow_Tick((void*)g_cachedPGame);
         /* Rift/Reset hooks removed 2026-05-05 — see
          * Research/RIFT_AND_RESET_FAILURE_2026-05-05.md */
+    }
+
+    /* 1.9.13 audit fix (2026-06-08) — Reward-apply consumer relocated
+     * here from HookD2DebugGame: same migration reason as CustomBoss_Tick/
+     * TreasureCow_Tick just above (D2DebugGame is environment-dependent;
+     * this hook always fires). This was the ONLY code anywhere that ever
+     * turned a queued g_pendingRewardGold/StatPts/SkillPts amount into an
+     * actual fnAddStat() grant — on setups where D2DebugGame never fired,
+     * every standalone-mode Collection/Bonus/Extra Check reward queued up
+     * forever and was silently discarded by ResetD2SFile at the next
+     * character load/exit, without ever reaching the character. Logic
+     * unchanged from its original form; only the house it lives in, and
+     * pGame -> g_cachedPGame to match this context’s calling convention. */
+    if (g_cachedPGame) {
+        static int s_appliedGold = 0;
+        static int s_appliedStatPts = 0;
+        static int s_appliedSkillPts = 0;
+        void* pPlayer = GetServerPlayer(g_cachedPGame);
+        if (pPlayer && fnAddStat) {
+            int newGold = g_pendingRewardGold - s_appliedGold;
+            int newStatPts = g_pendingRewardStatPts - s_appliedStatPts;
+            int newSkillPts = g_pendingRewardSkillPts - s_appliedSkillPts;
+            __try {
+                if (newGold > 0) {
+                    fnAddStat(pPlayer, STAT_GOLD, newGold, 0);
+                    s_appliedGold = g_pendingRewardGold;
+                }
+                if (newStatPts > 0) {
+                    fnAddStat(pPlayer, STAT_STATPTS, newStatPts, 0);
+                    s_appliedStatPts = g_pendingRewardStatPts;
+                }
+                if (newSkillPts > 0) {
+                    fnAddStat(pPlayer, STAT_NEWSKILLS, newSkillPts, 0);
+                    s_appliedSkillPts = g_pendingRewardSkillPts;
+                }
+            } __except(EXCEPTION_EXECUTE_HANDLER) {
+                static int addStatErr = 0;
+                if (addStatErr++ < 3)
+                    Log("Live reward apply exception\n");
+            }
+        }
+        /* Reset applied counters when pending is zeroed (after .d2s write) */
+        if (g_pendingRewardGold == 0) s_appliedGold = 0;
+        if (g_pendingRewardStatPts == 0) s_appliedStatPts = 0;
+        if (g_pendingRewardSkillPts == 0) s_appliedSkillPts = 0;
     }
 
     /* 1.9.0 NEW: F1 Collection page tick — scans player inventory and
@@ -2209,7 +2102,7 @@ static void ProcessDeferredQuests(void) {
             int goalQid = (g_apGoalScope >= 0 && g_apGoalScope <= 4) ?
                           g_goalQuestIds[g_apGoalScope] : g_goalQuestIds[4];
             for (int gi = 0; gi < count; gi++) {
-                if (g_deferredQueue[gi] == goalQid) {
+                if (g_deferredQueue[gi] == goalQid && g_deferredDiff[gi] == g_apDiffScope) {
                     g_apGoalComplete = TRUE;
                     char dir2[MAX_PATH], gpath[MAX_PATH];
                     GetArchDir(dir2, MAX_PATH);

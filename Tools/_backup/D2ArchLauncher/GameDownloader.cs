@@ -44,6 +44,12 @@ public class GameDownloader
 	// Maegis 1.9.2 report: "Most video settings get changed back to default
 	// preventing player from playing in Fullscreen from launch." Same issue
 	// affected the Reshade / D2GL community for years before this fix.
+	//
+	// 1.9.13: added d2arch.ini — it carries the player's own AP connection
+	// info ([ap] ServerIP/SlotName/Password) and local toggles (e.g.
+	// ItemLevelReqs). Without this entry, the very first byte-size mismatch
+	// caused by editing it silently overwrote it with our shipped template
+	// (Marco's own test connection info) on every single "Play" click.
 	private static readonly HashSet<string> USER_EDITABLE_FILES = new(StringComparer.OrdinalIgnoreCase)
 	{
 		"d2gl.ini",
@@ -51,6 +57,7 @@ public class GameDownloader
 		"d2sigma.ini",
 		"d2gl_userkeys.ini",
 		"keymap.ini",
+		"d2arch.ini",
 	};
 
 	public bool IsCancelled { get; set; }
@@ -376,7 +383,18 @@ public class GameDownloader
 		{
 			orphansDeleted = DeleteOrphans(manifestPaths);
 		}
-		if (failed == 0)
+		// 1.9.13 fix — record the version we just synced to regardless of
+		// `failed`. Every file that DID download here was SHA256-verified
+		// against this exact manifest, and VerifyInstallationAsync (run
+		// before every Play click) catches and re-fetches anything that's
+		// still missing or wrong. Gating this write on a 100% success rate
+		// across ~890 incidental files (screenshots, optional assets, etc.)
+		// left version.dat stuck on stale content whenever a single flaky
+		// download failed (network blip, GitHub rate-limit, or AV
+		// quarantining one of the PyInstaller .pyd files in
+		// ap_bridge_dist/) — the launcher then kept reporting the OLD
+		// installed version and re-prompting "Update Game" even though the
+		// game itself was already correctly running the new build.
 		{
 			string result = null;
 			JsonFindString(manifestJson, "version", ref result);

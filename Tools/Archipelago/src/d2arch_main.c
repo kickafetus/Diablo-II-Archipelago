@@ -562,7 +562,6 @@ static void InstallWndProcHook(void) {
  * ================================================================ */
 static void InitAPI(void) {
     hD2Client = GetModuleHandleA("D2Client.dll");
-    if (!hD2Client) hD2Client = GetModuleHandleA("D2Client.dll");
     hD2Common = GetModuleHandleA("D2Common.dll");
     hD2Win    = GetModuleHandleA("D2Win.dll");
     hD2Gfx   = GetModuleHandleA("D2Gfx.dll");
