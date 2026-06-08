@@ -68,7 +68,7 @@ public class MainForm : Form
 
 	private const string GAME_VERSION = "Beta 1.8.6";
 
-	private const string LAUNCHER_VERSION = "1.5.7";
+	private const string LAUNCHER_VERSION = "1.5.8";
 
 	/// &lt;summary&gt;
 	/// Compare two version strings semantically.
@@ -1845,6 +1845,16 @@ public class MainForm : Form
 				// then correctly shows "Update Game" immediately, rather
 				// than a false "Ready to play" that only gets corrected
 				// the next time the launcher restarts.
+				//
+				// 1.9.14 fix — _state is still Downloading at this point
+				// (StartUpdate set it and nothing clears it before this
+				// callback runs), so RecomputeStateForSelection's "don't
+				// clobber an active download" guard returned early and
+				// left the button stuck on CANCEL until restart. Clear it
+				// first so the recompute actually runs and lands on the
+				// correct final state (it overwrites this placeholder with
+				// whatever the disk + dropdown selection say it should be).
+				_state = LState.UpToDate;
 				RecomputeStateForSelection();
 			});
 		};
