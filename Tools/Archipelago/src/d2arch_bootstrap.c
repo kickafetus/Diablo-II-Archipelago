@@ -221,10 +221,9 @@ int main(int argc, char* argv[]) {
 
     /* Build D2.Detours command line */
     char cmdLine[1024];
-    sprintf(cmdLine, "D2.DetoursLauncher.exe Game.exe --");
-    for (int i = 1; i < argc; i++) {
-        strcat(cmdLine, " ");
-        strcat(cmdLine, argv[i]);
+    int cmdOff = snprintf(cmdLine, sizeof(cmdLine), "D2.DetoursLauncher.exe Game.exe --");
+    for (int i = 1; i < argc && cmdOff < (int)sizeof(cmdLine) - 1; i++) {
+        cmdOff += snprintf(cmdLine + cmdOff, sizeof(cmdLine) - cmdOff, " %s", argv[i]);
     }
 
     printf("============================================\n");
