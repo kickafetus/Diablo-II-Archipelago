@@ -662,6 +662,15 @@ def create_regions(world: "Diablo2ArchipelagoWorld") -> None:
     # Tiers 2-N are new regions gated on the deepest story quest from the
     # prior tier via can_reach_location. If a tier has no story quest the
     # connection is unconditional (tiers merge in sphere depth).
+    #
+    # Entrance Shuffle exception: the shuffler moves dead-end cave entrances
+    # whose physical locations match the zone IDs our tier boundaries depend on.
+    # Several story-quest anchors also live in shuffleable caves (e.g. Sisters'
+    # Burial Grounds, area 17), so conditional tier gates could create circular
+    # dependencies when shuffle moves that cave to a deeper tier. When
+    # entrance_shuffle is ON all tier connections are unconditional — the act-to-
+    # act boss gates still apply, only within-act depth is flattened.
+    #
     # Bonus/extra check locations are EXCLUDED so AP fill never places
     # progression items at escalating-chance slots that may not be consumed.
     from BaseClasses import LocationProgressType
@@ -669,6 +678,10 @@ def create_regions(world: "Diablo2ArchipelagoWorld") -> None:
                    "extra_cow", "extra_merc", "extra_hfrunes",
                    "extra_npc", "extra_runeword", "extra_cube",
                    "collection")
+    entrance_shuffled = (
+        hasattr(world.options, "entrance_shuffle")
+        and bool(world.options.entrance_shuffle.value)
+    )
 
     act_sub_regions: dict[tuple[int, int, int], Region] = {}
     for diff in range(num_diffs):
@@ -708,8 +721,8 @@ def create_regions(world: "Diablo2ArchipelagoWorld") -> None:
             for tier in range(1, num_tiers):
                 src = act_sub_regions[(act_num, diff, tier)]
                 dst = act_sub_regions[(act_num, diff, tier + 1)]
-                anchor_entry = best.get(tier)
                 lbl = f"Act {act_num} T{tier}->T{tier+1} ({DIFF_NAME[diff]})"
+                anchor_entry = None if entrance_shuffled else best.get(tier)
                 if anchor_entry:
                     anc = anchor_entry[1]
                     src.connect(dst, lbl,
