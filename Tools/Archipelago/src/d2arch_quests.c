@@ -443,7 +443,7 @@ static Quest g_act2Quests[] = {
     {171, "Hunt: Bloodwitch",         "Kill Bloodwitch the Wild",             QTYPE_SUPERUNIQUE, 11, 0,0, FALSE, REWARD_SKILL, 0 },
     {172, "Hunt: Fangskin",           "Kill Fangskin",                        QTYPE_SUPERUNIQUE, 12, 0,0, FALSE, REWARD_SKILL, 0 },
     {173, "Hunt: Beetleburst",        "Kill Beetleburst",                     QTYPE_SUPERUNIQUE, 13, 0,0, FALSE, REWARD_SKILL, 0 },
-    {174, "Hunt: Leatherarm",         "Kill Creeping Feature",               QTYPE_SUPERUNIQUE, 14, 0,0, FALSE, REWARD_SKILL, 0 },
+    {174, "Hunt: Creeping Feature",   "Kill Creeping Feature",               QTYPE_SUPERUNIQUE, 14, 0,0, FALSE, REWARD_SKILL, 0 },
     {175, "Hunt: Coldworm",           "Kill Coldworm the Burrower",          QTYPE_SUPERUNIQUE, 15, 0,0, FALSE, REWARD_SKILL, 0 },
     {176, "Hunt: Fire Eye",           "Kill Fire Eye",                       QTYPE_SUPERUNIQUE, 16, 0,0, FALSE, REWARD_SKILL, 0 },
     {177, "Hunt: Dark Elder",         "Kill Dark Elder",                     QTYPE_SUPERUNIQUE, 17, 0,0, FALSE, REWARD_SKILL, 0 },
@@ -502,7 +502,7 @@ static Quest g_act3Quests[] = {
     {206, "The Guardian",        "Complete the Mephisto quest",        QTYPE_QUESTFLAG, 22, 0,0, FALSE, REWARD_SKILL, 0 },
     /* SuperUnique hunting (PROGRESSION) — hcIdx from SuperUniques.txt */
     /* NOTE: The Smith (hcIdx=20) moved to Act 1 where it actually spawns (Barracks) */
-    {271, "Hunt: Web Mage",           "Kill Sszark the Burning",             QTYPE_SUPERUNIQUE, 21, 0,0, FALSE, REWARD_SKILL, 0 },
+    {271, "Hunt: Sszark the Burning", "Kill Sszark the Burning",             QTYPE_SUPERUNIQUE, 21, 0,0, FALSE, REWARD_SKILL, 0 },
     {272, "Hunt: Witch Doctor Endugu","Kill Witch Doctor Endugu",            QTYPE_SUPERUNIQUE, 22, 0,0, FALSE, REWARD_SKILL, 0 },
     {273, "Hunt: Stormtree",          "Kill Stormtree",                      QTYPE_SUPERUNIQUE, 23, 0,0, FALSE, REWARD_SKILL, 0 },
     {274, "Hunt: Sarina",             "Kill Sarina",                         QTYPE_SUPERUNIQUE, 24, 0,0, FALSE, REWARD_SKILL, 0 },
@@ -594,7 +594,7 @@ static Quest g_act5Quests[] = {
     {405, "Rite of Passage",     "Complete the Ancients quest",        QTYPE_QUESTFLAG, 39, 0,0, FALSE, REWARD_SKILL, 0 },
     {406, "Eve of Destruction",  "Complete the Baal quest",            QTYPE_QUESTFLAG, 40, 0,0, FALSE, REWARD_SKILL, 0 },
     /* SuperUnique hunting (PROGRESSION) — hcIdx from SuperUniques.txt */
-    {470, "Hunt: Siege Boss",         "Kill Shenk the Overseer",             QTYPE_SUPERUNIQUE, 42, 0,0, FALSE, REWARD_SKILL, 0 },
+    {470, "Hunt: Shenk the Overseer", "Kill Shenk the Overseer",             QTYPE_SUPERUNIQUE, 42, 0,0, FALSE, REWARD_SKILL, 0 },
     {471, "Hunt: Dac Farren",         "Kill Dac Farren",                     QTYPE_SUPERUNIQUE, 48, 0,0, FALSE, REWARD_SKILL, 0 },
     {472, "Hunt: Bonesaw Breaker",    "Kill Bonesaw Breaker",                QTYPE_SUPERUNIQUE, 47, 0,0, FALSE, REWARD_SKILL, 0 },
     {473, "Hunt: Eyeback Unleashed",  "Kill Eyeback the Unleashed",          QTYPE_SUPERUNIQUE, 50, 0,0, FALSE, REWARD_SKILL, 0 },

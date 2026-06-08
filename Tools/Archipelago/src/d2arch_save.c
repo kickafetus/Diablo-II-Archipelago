@@ -81,9 +81,15 @@ static void PruneOldBackups(const char* d2sPath, int keepN) {
     dir[sizeof(dir) - 1] = 0;
     char* sl = strrchr(dir, '\\');
     if (!sl) return;
-    *(sl + 1) = 0;
+    /* 1.9.13 audit fix (2026-06-08): copy the filename substring at sl+1
+     * into 'base' BEFORE truncating 'dir' at the slash. Both point into
+     * the SAME buffer and sl+1 is exactly where the truncating NUL lands —
+     * writing it first wipes the very bytes strncpy then reads, so 'base'
+     * always came out empty, the glob pattern below never matched any real
+     * backup file, and old .d2s.*.bak files piled up forever unpruned. */
     strncpy(base, sl + 1, sizeof(base) - 1);
     base[sizeof(base) - 1] = 0;
+    *(sl + 1) = 0;
 
     char pat[MAX_PATH];
     snprintf(pat, sizeof(pat), "%s%s.*.bak", dir, base);

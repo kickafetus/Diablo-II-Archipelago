@@ -68,7 +68,7 @@ public class MainForm : Form
 
 	private const string GAME_VERSION = "Beta 1.8.6";
 
-	private const string LAUNCHER_VERSION = "1.5.6";
+	private const string LAUNCHER_VERSION = "1.5.7";
 
 	/// &lt;summary&gt;
 	/// Compare two version strings semantically.
@@ -1821,8 +1821,6 @@ public class MainForm : Form
 			Invoke(delegate
 			{
 				SetStatus(msg);
-				_state = LState.UpToDate;
-				UpdatePlayButton();
 				if (success)
 				{
 					// Ensure original D2 files are present after update.
@@ -1840,6 +1838,14 @@ public class MainForm : Form
 				{
 					CopyApWorldFile();
 				}
+				// 1.9.13 fix — derive _state/button/status from what's
+				// actually on disk now (re-reads version.dat, which
+				// InstallFromManifestAsync just rewrote) instead of
+				// blindly assuming UpToDate. A still-mismatched install
+				// then correctly shows "Update Game" immediately, rather
+				// than a false "Ready to play" that only gets corrected
+				// the next time the launcher restarts.
+				RecomputeStateForSelection();
 			});
 		};
 		_downloader.UpdateFromManifestAsync();

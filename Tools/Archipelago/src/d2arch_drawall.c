@@ -691,7 +691,7 @@ static void DrawAll(void) {
         static BOOL s_loadAttempted = FALSE;
 
         int panelOpen = 0;
-        __try { panelOpen = *(int*)0x6FBBA6B8; } __except(1) {}
+        __try { panelOpen = *(int*)(g_d2clientBase + 0x11A6B8); } __except(1) {}
 
         /* Reset DC6 state on character change */
         if (g_skillPanelReset) {
@@ -3389,7 +3389,7 @@ cheat_menu_done:
     /* Clear reset flag only when panel was open (so it actually got processed) */
     if (g_skillPanelReset) {
         int po = 0;
-        __try { po = *(int*)0x6FBBA6B8; } __except(1) {}
+        __try { po = *(int*)(g_d2clientBase + 0x11A6B8); } __except(1) {}
         if (po) g_skillPanelReset = FALSE;
     }
 

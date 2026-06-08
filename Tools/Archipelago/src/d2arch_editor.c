@@ -2532,7 +2532,15 @@ static void RenderEditor(void) {
         fnFont(0);
         wchar_t wbuf[64];
         /* Reset points + tier requirements in one clean box */
-        int playerLvl = fnGetStat ? fnGetStat(fnGetPlayer(), 12, 0) : 1;
+        /* 1.9.13 audit fix (2026-06-08): guard both the function pointer
+         * AND the unit it returns — fnGetPlayer can be unresolved, and
+         * returns NULL whenever no character is in-game (menus, loading,
+         * exit), which fnGetStat does not itself null-check. Use the
+         * existing Player() helper (d2arch_helpers.c) for the same
+         * lookup-plus-NULL-check every other call site in this codebase
+         * already relies on. */
+        void* lvlUnit = Player();
+        int playerLvl = (fnGetStat && lvlUnit) ? fnGetStat(lvlUnit, 12, 0) : 1;
         swprintf(wbuf, 64, L"Resets: %d", g_resetPoints);
         fnText(wbuf, rpBx + 8, rpBy + 13, g_resetPoints > 0 ? 9 : 7, 0);
         /* Tier requirements — right side of same line */
@@ -2734,7 +2742,15 @@ static void RenderEditor(void) {
                         }
                         if (es >= 0) {
                             /* Level gate: T2 requires level 20, T3 requires level 40 */
-                            int playerLvl = fnGetStat ? fnGetStat(fnGetPlayer(), 12, 0) : 1;
+                            /* 1.9.13 audit fix (2026-06-08): guard both the function pointer
+                             * AND the unit it returns — fnGetPlayer can be unresolved, and
+                             * returns NULL whenever no character is in-game (menus, loading,
+                             * exit), which fnGetStat does not itself null-check. Use the
+                             * existing Player() helper (d2arch_helpers.c) for the same
+                             * lookup-plus-NULL-check every other call site in this codebase
+                             * already relies on. */
+                            void* lvlUnit = Player();
+                            int playerLvl = (fnGetStat && lvlUnit) ? fnGetStat(lvlUnit, 12, 0) : 1;
                             if (sk->tier == 2 && playerLvl < 20) {
                                 ShowNotify("Requires Level 20 for Tier 2!");
                             } else if (sk->tier == 3 && playerLvl < 40) {
