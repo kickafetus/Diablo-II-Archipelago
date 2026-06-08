@@ -656,46 +656,91 @@ def create_regions(world: "Diablo2ArchipelagoWorld") -> None:
                 f"{DIFF_NAME[diff]} complete -> {DIFF_NAME[diff + 1]}",
             )
 
-    # SKILL HUNT mode: locations placed in act_regions with no per-location
-    # access rule. Skills are useful (not progression) so AP fill never
-    # places anything that could break the player's seed. In multiworld
-    # mode, other players' progression items may land at this slot's
-    # Hell/NM locations — that's a pacing concern (this slot has to
-    # progress to Hell before forwarding the key) but not a logic
-    # softlock since act_regions already chain via boss_connections.
-    # Users sensitive to multiworld pacing should set
-    # progression_balancing higher to spread items more evenly.
-    # 1.9.0 — Bonus check locations get marked EXCLUDED so AP fill
-    # cannot place progression items at them. The escalating-chance
-    # roll on the DLL side may not consume every slot, and stranded
-    # progression items would soft-lock multiworld players. Filler-only
-    # items at these slots are harmless if never collected.
+    # SKILL HUNT mode: within-act tier sub-regions.
+    # Each (act_num, diff) is split into depth tiers matching ACT_REGIONS.
+    # Tier 1 is the existing act_region (already wired into boss_connections).
+    # Tiers 2-N are new regions gated on the deepest story quest from the
+    # prior tier via can_reach_location. If a tier has no story quest the
+    # connection is unconditional (tiers merge in sphere depth).
+    # Bonus/extra check locations are EXCLUDED so AP fill never places
+    # progression items at escalating-chance slots that may not be consumed.
     from BaseClasses import LocationProgressType
-    # 1.9.10 — added "collection" alongside bonus/extra types so Goal=3
-    # collection-event locations get filler-only (EXCLUDED) treatment,
-    # preventing AP fill from placing progression items at "Collection: Zod
-    # Rune" etc. where the player may never trigger the check.
     BONUS_TYPES = ("bonus_object", "bonus_gold", "bonus_setpickup",
                    "extra_cow", "extra_merc", "extra_hfrunes",
                    "extra_npc", "extra_runeword", "extra_cube",
                    "collection")
+
+    act_sub_regions: dict[tuple[int, int, int], Region] = {}
+    for diff in range(num_diffs):
+        for act_num in range(1, max_act + 1):
+            act_sub_regions[(act_num, diff, 1)] = act_regions[(act_num, diff)]
+            num_tiers = len(ACT_REGIONS.get(act_num, {}))
+            for tier in range(2, num_tiers + 1):
+                r = Region(
+                    f"Act {act_num} {DIFF_NAME[diff]} Tier {tier}",
+                    player, multiworld,
+                )
+                multiworld.regions.append(r)
+                act_sub_regions[(act_num, diff, tier)] = r
+
+    for diff in range(num_diffs):
+        for act_num in range(1, max_act + 1):
+            num_tiers = len(ACT_REGIONS.get(act_num, {}))
+            # Per tier: find the story quest with the highest quest_id.
+            # That quest is the natural "end of tier" checkpoint gating the next.
+            best: dict[int, tuple[int, str]] = {}  # tier -> (qid, loc_name)
+            for quest_id, name, quest_type, _ in ALL_ACT_LOCATIONS[act_num - 1]:
+                if quest_type != "story":
+                    continue
+                loc_name = _loc_at(name, diff)
+                if loc_name not in active_loc_names:
+                    continue
+                zone_id = QUEST_ID_TO_AREA.get(quest_id)
+                if zone_id is None:
+                    continue
+                physical = _zone_to_region(zone_id)
+                if physical is None:
+                    continue
+                tier = physical[1]
+                if tier not in best or quest_id > best[tier][0]:
+                    best[tier] = (quest_id, loc_name)
+
+            for tier in range(1, num_tiers):
+                src = act_sub_regions[(act_num, diff, tier)]
+                dst = act_sub_regions[(act_num, diff, tier + 1)]
+                anchor_entry = best.get(tier)
+                lbl = f"Act {act_num} T{tier}->T{tier+1} ({DIFF_NAME[diff]})"
+                if anchor_entry:
+                    anc = anchor_entry[1]
+                    src.connect(dst, lbl,
+                        lambda state, p=player, a=anc:
+                            state.can_reach_location(a, p))
+                else:
+                    src.connect(dst, lbl)
+
     for quest_id, loc_name, quest_type, classification, loc_id, diff in active_locations:
-        # Level milestones use max_acts_needed as the target act so that
-        # e.g. "Reach Level 30" lands in Act 4 (behind the full act chain)
-        # rather than Act 1 where _quest_id_to_act would put it. This
-        # mirrors the zone_locking access rule logic for skill_hunt mode.
         if quest_type == "level":
-            act_num = QUEST_ID_TO_MAX_ACTS.get(quest_id, 1)
+            target_act  = QUEST_ID_TO_MAX_ACTS.get(quest_id, 1)
+            target_tier = 1
         else:
-            act_num = _quest_id_to_act(quest_id)
-        # 1.9.11 — locations placed in the (act, diff) region matching
-        # their own diff field (was: act-only, all diffs collapsed). This
-        # is what makes sphere depth work in skill_hunt mode.
-        if (act_num, diff) in act_regions:
-            loc = world.create_location(loc_name, loc_id, act_regions[(act_num, diff)])
-            if quest_type in BONUS_TYPES:
-                loc.progress_type = LocationProgressType.EXCLUDED
-            act_regions[(act_num, diff)].locations.append(loc)
+            target_act = _quest_id_to_act(quest_id)
+            zone_id = QUEST_ID_TO_AREA.get(quest_id)
+            if zone_id is not None and zone_id not in ALWAYS_OPEN_ZONES:
+                physical = _zone_to_region(zone_id)
+                target_tier = physical[1] if physical is not None else 1
+            else:
+                target_tier = 1
+
+        target_region = act_sub_regions.get(
+            (target_act, diff, target_tier),
+            act_regions.get((target_act, diff)),
+        )
+        if target_region is None:
+            continue
+        loc = world.create_location(loc_name, loc_id, target_region)
+        if quest_type in BONUS_TYPES:
+            loc.progress_type = LocationProgressType.EXCLUDED
+        target_region.locations.append(loc)
 
 
 def diff_name_fromdiff(d):
