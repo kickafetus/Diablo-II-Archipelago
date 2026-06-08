@@ -68,7 +68,7 @@ public class MainForm : Form
 
 	private const string GAME_VERSION = "Beta 1.8.6";
 
-	private const string LAUNCHER_VERSION = "1.5.8";
+	private const string LAUNCHER_VERSION = "1.5.9";
 
 	/// &lt;summary&gt;
 	/// Compare two version strings semantically.
