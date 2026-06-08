@@ -437,6 +437,12 @@ static void ProcessPendingGameTick(void) {
         static DWORD s_trapTownLastLog = 0;
         static DWORD s_trapTownFirstQueue = 0;
         static DWORD s_trapNullFirstTick = 0;  /* out-of-town NULL watchdog */
+        /* Verified monster IDs from MONS_NORMAL_FULL (_monster_catalog_generated.h) */
+        static const int s_trapAct1[]  = { 19, 20, 21, 22,  5,  6, 43, 44, 24,  0 }; /* Fallen, Zombie, Rogue, Brute, Skeleton */
+        static const int s_trapAct2[]  = { 29, 30, 31, 91, 92, 96, 73, 74, 78, 136 }; /* Sand Raider, Scarab, Mummy, Claw Viper, Sand Leaper, Desert Wing */
+        static const int s_trapAct3[]  = { 141, 142, 143, 122, 123, 127, 128, 186, 247, 248 }; /* Fetish, Arach, Thorned Hulk, Blunderbore, Frog Demon */
+        static const int s_trapAct4[]  = { 310, 311, 312, 304, 305, 306, 298, 299, 300 };      /* Doom Knight, Finger Mage, Vile Mother */
+        static const int s_trapAct5[]  = { 441, 442, 479, 480, 506, 507, 501, 529, 453, 469 }; /* Siege Beast, Overseer, Blood Lord, Frozen Horror, Death Mauler, Minion, Succubus */
 
         if (g_pendingTrapSpawn > 0 && g_cachedPGame && fnSpawnMonster) {
             int curArea = GetCurrentArea();
@@ -473,14 +479,17 @@ static void ProcessPendingGameTick(void) {
                             int nX = (int)*(unsigned short*)(pPath + 0x02);
                             int nY = (int)*(unsigned short*)(pPath + 0x06);
                             if (pRoom && nX > 0 && nY > 0) {
-                                /* Pick common monsters for current act area */
+                                /* Pick area-appropriate monster from verified catalog pools */
                                 int area = GetCurrentArea();
-                                int monId = 0;
-                                if (area < 40) monId = 3 + (area % 10);            /* Act 1 range */
-                                else if (area < 75) monId = 100 + (area % 15);     /* Act 2 */
-                                else if (area < 103) monId = 180 + (area % 12);    /* Act 3 */
-                                else if (area < 109) monId = 270 + (area % 8);     /* Act 4 */
-                                else monId = 360 + (area % 15);                    /* Act 5 */
+                                const int* trapPool;
+                                int poolSize;
+                                if      (area < 40)  { trapPool = s_trapAct1; poolSize = 10; }
+                                else if (area < 75)  { trapPool = s_trapAct2; poolSize = 10; }
+                                else if (area < 103) { trapPool = s_trapAct3; poolSize = 10; }
+                                else if (area < 109) { trapPool = s_trapAct4; poolSize = 9;  }
+                                else                 { trapPool = s_trapAct5; poolSize = 10; }
+                                DWORD pickSeed = GetTickCount();
+                                int monId = trapPool[(pickSeed ^ (pickSeed >> 7)) % (DWORD)poolSize];
 
                                 int count = 8 + (GetTickCount() % 5);              /* 8-12 monsters */
                                 int spawned = 0;
