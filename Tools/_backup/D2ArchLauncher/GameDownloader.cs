@@ -307,6 +307,29 @@ public class GameDownloader
 				}
 			}
 		}
+		// 1.9.13 fix, relocated — record the version this manifest
+		// represents before deciding whether any files need downloading.
+		// The original fix only moved this write out from behind a
+		// `failed == 0` gate but left it inside the download branch below
+		// — so a launcher that finds zero files to update (the steady
+		// state every install settles into once it's actually current)
+		// would report "All files up to date!" and return without ever
+		// reaching it. That's exactly how a player can stay stuck
+		// announcing "Beta 1.9.4" release after release: their game files
+		// are correct (gameplay is fine), but a stamp that missed being
+		// written on some earlier flaky update never gets another chance
+		// to self-heal, because "nothing to download" is the path every
+		// later check takes forever after. Recording it here — the instant
+		// we know our files already match this manifest, or are about to
+		// be made to — covers both outcomes from one place.
+		{
+			string result = null;
+			JsonFindString(manifestJson, "version", ref result);
+			if (result != null)
+			{
+				UpdateVersionDat(result);
+			}
+		}
 		if (filesToDownload.Count == 0)
 		{
 			Report(100, "All files up to date!");
@@ -382,26 +405,6 @@ public class GameDownloader
 		if (failed == 0)
 		{
 			orphansDeleted = DeleteOrphans(manifestPaths);
-		}
-		// 1.9.13 fix — record the version we just synced to regardless of
-		// `failed`. Every file that DID download here was SHA256-verified
-		// against this exact manifest, and VerifyInstallationAsync (run
-		// before every Play click) catches and re-fetches anything that's
-		// still missing or wrong. Gating this write on a 100% success rate
-		// across ~890 incidental files (screenshots, optional assets, etc.)
-		// left version.dat stuck on stale content whenever a single flaky
-		// download failed (network blip, GitHub rate-limit, or AV
-		// quarantining one of the PyInstaller .pyd files in
-		// ap_bridge_dist/) — the launcher then kept reporting the OLD
-		// installed version and re-prompting "Update Game" even though the
-		// game itself was already correctly running the new build.
-		{
-			string result = null;
-			JsonFindString(manifestJson, "version", ref result);
-			if (result != null)
-			{
-				UpdateVersionDat(result);
-			}
 		}
 		Report(100, $"Done! {downloaded} files downloaded, {failed} failed.");
 		string completeMsg = $"Updated {downloaded} files.";
