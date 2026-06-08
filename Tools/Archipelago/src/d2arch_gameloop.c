@@ -436,6 +436,7 @@ static void ProcessPendingGameTick(void) {
     {
         static DWORD s_trapTownLastLog = 0;
         static DWORD s_trapTownFirstQueue = 0;
+        static DWORD s_trapNullFirstTick = 0;  /* out-of-town NULL watchdog */
 
         if (g_pendingTrapSpawn > 0 && g_cachedPGame && fnSpawnMonster) {
             int curArea = GetCurrentArea();
@@ -464,6 +465,7 @@ static void ProcessPendingGameTick(void) {
 
                 void* pTrap = GetServerPlayer(g_cachedPGame);
                 if (pTrap) {
+                    s_trapNullFirstTick = 0;  /* player visible — reset null watchdog */
                     __try {
                         DWORD pPath = *(DWORD*)((DWORD)pTrap + 0x2C);
                         if (pPath) {
@@ -497,6 +499,19 @@ static void ProcessPendingGameTick(void) {
                         }
                     } __except(1) { Log("TRAP: exception\n"); }
                     g_pendingTrapSpawn--;
+                } else {
+                    /* GetServerPlayer returned NULL outside town — player is
+                     * likely mid-transition (loading screen). Allow 10s for
+                     * the game to stabilize; after that drop the trap so the
+                     * counter can't stick indefinitely. */
+                    DWORD now = GetTickCount();
+                    if (s_trapNullFirstTick == 0) s_trapNullFirstTick = now;
+                    if (now - s_trapNullFirstTick > 10000) {
+                        g_pendingTrapSpawn--;
+                        s_trapNullFirstTick = 0;
+                        Log("TRAP: no server player for >10s outside town — "
+                            "dropped stale trap (pending=%d)\n", g_pendingTrapSpawn);
+                    }
                 }
             }
         }
